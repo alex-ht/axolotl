@@ -125,14 +125,14 @@ setup(
     },
     extras_require={
         "flash-attn": [
-            "flash-attn==2.7.4.post1",
+            "flash-attn",
         ],
         "deepspeed": [
-            "deepspeed==0.16.1",
+            "deepspeed",
             "deepspeed-kernels",
         ],
         "mamba-ssm": [
-            "mamba-ssm==1.2.0.post1",
+            "mamba-ssm",
             "causal_conv1d",
         ],
         "auto-gptq": [
@@ -149,15 +149,15 @@ setup(
         ],
         "optimizers": [
             "galore_torch",
-            "lion-pytorch==0.1.2",
-            "lomo-optim==0.1.1",
-            "torch-optimi==0.2.1",
+            "lion-pytorch",
+            "lomo-optim",
+            "torch-optimi",
         ],
         "ray": [
             "ray[train]",
         ],
         "vllm": [
-            "vllm==0.7.2",
+            "vllm",
         ],
     },
 )
