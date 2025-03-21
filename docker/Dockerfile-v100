@@ -17,7 +17,7 @@ WORKDIR /workspace/axolotl
 
 RUN MAX_JOBS=8 pip install -v -U git+https://github.com/facebookresearch/xformers.git@main#egg=xformers 
 RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_QUANTIZER=1 \
-    pip install deepspeed --global-option="build_ext" --global-option="-j8
+    pip install deepspeed --global-option="build_ext" --global-option="-j8"
 
 # If AXOLOTL_EXTRAS is set, append it in brackets
 RUN if [ "$AXOLOTL_EXTRAS" != "" ] ; then \
