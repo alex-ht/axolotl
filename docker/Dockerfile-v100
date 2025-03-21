@@ -11,13 +11,13 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
-RUN git clone https://github.com/alex-ht/axolotl.git
-
-WORKDIR /workspace/axolotl
-
 RUN MAX_JOBS=8 pip install -v -U git+https://github.com/facebookresearch/xformers.git@v0.0.28.post3#egg=xformers 
 RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_QUANTIZER=1 \
     pip install deepspeed --global-option="build_ext" --global-option="-j8"
+
+RUN git clone https://github.com/alex-ht/axolotl.git
+
+WORKDIR /workspace/axolotl
 
 # If AXOLOTL_EXTRAS is set, append it in brackets
 RUN if [ "$AXOLOTL_EXTRAS" != "" ] ; then \
