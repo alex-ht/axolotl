@@ -1,0 +1,39 @@
+FROM nvcr.io/nvidia/pytorch:25.02-py3
+ENV TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0 8.6+PTX"
+ARG AXOLOTL_EXTRAS=""
+ARG AXOLOTL_ARGS=""
+
+RUN apt-get update \
+    && apt-get install -y --allow-change-held-packages \
+       wget git build-essential ninja-build git-lfs libaio-dev pkg-config \
+       vim curl nano libnccl2 libnccl-dev rsync s3fs \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+RUN git clone https://github.com/alex-ht/axolotl.git
+
+WORKDIR /workspace/axolotl
+
+RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_QUANTIZER=1 \
+    pip install deepspeed --global-option="build_ext" --global-option="-j8
+
+# If AXOLOTL_EXTRAS is set, append it in brackets
+RUN if [ "$AXOLOTL_EXTRAS" != "" ] ; then \
+        pip install --no-build-isolation -e .[optimizers,ray,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
+    else \
+        pip install --no-build-isolation -e .[optimizers,ray] $AXOLOTL_ARGS; \
+    fi
+
+RUN python scripts/unsloth_install.py | sh
+RUN python scripts/cutcrossentropy_install.py | sh
+
+# So we can test the Docker image
+#RUN pip install pytest
+
+# fix so that git fetch/pull from remote works
+RUN git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" && \
+    git config --get remote.origin.fetch
+
+# helper for huggingface-login cli
+RUN git config --global credential.helper store
