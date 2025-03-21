@@ -10,7 +10,7 @@ autoawq
 liger-kernel
 # END section
 
-packagin
+packaging
 
 peft
 transformers
