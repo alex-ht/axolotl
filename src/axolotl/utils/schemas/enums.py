@@ -52,3 +52,4 @@ class CustomSupportedOptimizers(str, Enum):
     ao_adamw_fp8 = "ao_adamw_fp8"  # pylint: disable=invalid-name
     adopt_adamw = "adopt_adamw"  # pylint: disable=invalid-name
     muon = "muon"  # pylint: disable=invalid-name
+    optimi_stable_adamw = "optimi_stable_adamw"  # pylint: disable=invalid-name

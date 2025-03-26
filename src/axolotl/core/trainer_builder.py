@@ -669,6 +669,12 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                 optimizer_kwargs["foreach"] = False
                 optimizer_cls = AdamW
                 optimizer_kwargs.update(adam_kwargs)
+            elif self.cfg.optimizer == "optimi_stable_adamw":
+                from optimi import StableAdamW
+
+                optimizer_kwargs["foreach"] = False
+                optimizer_cls = StableAdamW
+                optimizer_kwargs.update(adam_kwargs)
             elif self.cfg.optimizer == "ao_adamw_4bit":
                 # TODO remove 20250401
                 from torchao.prototype.low_bit_optim import AdamW4bit
