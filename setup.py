@@ -71,7 +71,7 @@ def parse_requirements():
                 _install_requires.append("xformers>=0.0.29.post2")
             elif (major, minor) >= (2, 5):
                 _install_requires.pop(_install_requires.index(xformers_version))
-                _install_requires.append("xformers<=0.0.28.post3")
+                _install_requires.append("xformers")
                 _install_requires.pop(_install_requires.index(autoawq_version))
             elif (major, minor) >= (2, 4):
                 if patch == 0:
