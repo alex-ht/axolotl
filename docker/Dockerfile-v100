@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/pytorch:24.10-py3
+FROM nvcr.io/nvidia/pytorch:24.11-py3
 ENV TORCH_CUDA_ARCH_LIST="7.0"
 ARG AXOLOTL_EXTRAS=""
 ARG AXOLOTL_ARGS=""
@@ -11,7 +11,7 @@ RUN apt-get update \
 
 WORKDIR /workspace
 
-RUN MAX_JOBS=8 pip install -v -U git+https://github.com/facebookresearch/xformers.git@v0.0.28.post3#egg=xformers 
+RUN MAX_JOBS=8 pip install -v -U git+https://github.com/facebookresearch/xformers.git@v0.0.29.post3#egg=xformers 
 RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_QUANTIZER=1 DS_BUILD_FP_QUANTIZER=1 \
     pip install deepspeed --global-option="build_ext" --global-option="-j8"
 
