@@ -68,13 +68,13 @@ def parse_requirements():
 
             if (major, minor) >= (2, 6):
                 _install_requires.pop(_install_requires.index(xformers_version))
-                _install_requires.append("xformers==0.0.29.post2")
+                _install_requires.append("xformers>=0.0.29.post2")
             elif (major, minor) >= (2, 5):
                 _install_requires.pop(_install_requires.index(xformers_version))
                 if patch == 0:
                     _install_requires.append("xformers==0.0.28.post2")
                 else:
-                    _install_requires.append("xformers>=0.0.28.post3")
+                    _install_requires.append("xformers<=0.0.28.post3")
                 _install_requires.pop(_install_requires.index(autoawq_version))
             elif (major, minor) >= (2, 4):
                 if patch == 0:
@@ -119,14 +119,16 @@ setup(
         ],
     },
     extras_require={
-        "flash-attn": ["flash-attn==2.7.4.post1"],
-        "ring-flash-attn": ["ring-flash-attn>=0.1.4", "yunchang==0.6.0"],
+        "flash-attn": [
+            "flash-attn",
+        ],
+        "ring-flash-attn": ["ring-flash-attn>=0.1.4", "yunchang"],
         "deepspeed": [
-            "deepspeed==0.16.4",
+            "deepspeed",
             "deepspeed-kernels",
         ],
         "mamba-ssm": [
-            "mamba-ssm==1.2.0.post1",
+            "mamba-ssm",
             "causal_conv1d",
         ],
         "auto-gptq": [
@@ -143,15 +145,15 @@ setup(
         ],
         "optimizers": [
             "galore_torch",
-            "lion-pytorch==0.1.2",
-            "lomo-optim==0.1.1",
-            "torch-optimi==0.2.1",
+            "lion-pytorch",
+            "lomo-optim",
+            "torch-optimi",
         ],
         "ray": [
             "ray[train]",
         ],
         "vllm": [
-            "vllm==0.7.2",
+            "vllm",
         ],
     },
 )
