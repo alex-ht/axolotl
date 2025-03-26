@@ -36,6 +36,7 @@ einops
 colorama
 numba
 numpy>=1.24.4,<=2.0.1
+
 # qlora things
 evaluate
 scipy

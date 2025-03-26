@@ -55,7 +55,7 @@ Features:
 ### Installation
 
 ```bash
-pip3 install -U packaging setuptools wheel ninja
+pip3 install -U packaging==23.2 setuptools==75.8.0 wheel ninja
 pip3 install --no-build-isolation axolotl[flash-attn,deepspeed]
 
 # Download example axolotl configs, deepspeed configs
@@ -97,6 +97,7 @@ That's it! Check out our [Getting Started Guide](https://axolotl-ai-cloud.github
 - [Multi-GPU Training](https://axolotl-ai-cloud.github.io/axolotl/docs/multi-gpu.html)
 - [Multi-Node Training](https://axolotl-ai-cloud.github.io/axolotl/docs/multi-node.html)
 - [Multipacking](https://axolotl-ai-cloud.github.io/axolotl/docs/multipack.html)
+- [API Reference](https://axolotl-ai-cloud.github.io/axolotl/docs/api/) - Auto-generated code documentation
 - [FAQ](https://axolotl-ai-cloud.github.io/axolotl/docs/faq.html) - Frequently asked questions
 
 ## 🤝 Getting Help
