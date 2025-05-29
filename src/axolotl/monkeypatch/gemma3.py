@@ -234,5 +234,5 @@ def patch_gemma3conditionalgeneration_forward():
     from transformers.models.gemma3.modeling_gemma3 import (
         Gemma3ForConditionalGeneration,
     )
-
-    Gemma3ForConditionalGeneration.forward = new_forward
+    # 關閉它
+    #Gemma3ForConditionalGeneration.forward = new_forward
