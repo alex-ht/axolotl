@@ -4,7 +4,7 @@
 bitsandbytes
 triton>=3.0.0
 mamba-ssm
-xformers>=0.0.23.post1
+#xformers>=0.0.23.post1
 autoawq
 liger-kernel
 # END section
