@@ -111,14 +111,14 @@ def get_package_version():
 
 
 extras_require = {
-    "flash-attn": ["flash-attn==2.7.4.post1"],
+    "flash-attn": ["flash-attn"],
     "ring-flash-attn": [
-        "flash-attn==2.7.4.post1",
+        "flash-attn",
         "ring-flash-attn>=0.1.4",
         "yunchang==0.6.0",
     ],
     "deepspeed": [
-        "deepspeed==0.17.0",
+        "deepspeed",
         "deepspeed-kernels",
     ],
     "mamba-ssm": [
@@ -148,10 +148,10 @@ extras_require = {
         "ray[train]",
     ],
     "vllm": [
-        "vllm==0.7.2",
+        "vllm",
     ],
     "llmcompressor": [
-        "llmcompressor==0.5.1",
+        "llmcompressor",
     ],
 }
 
