@@ -45,7 +45,7 @@ scikit-learn
 nvidia-ml-py
 art
 tensorboard
-python-dotenv==
+python-dotenv
 
 # remote filesystems
 s3fs>=2024.5.0
