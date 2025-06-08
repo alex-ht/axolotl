@@ -25,7 +25,7 @@ def parse_requirements(extras_require_map):
                 # Handle standard packages
                 _install_requires.append(line)
     try:
-        xformers_version = [req for req in _install_requires if "xformers" in req][0]
+        #xformers_version = [req for req in _install_requires if "xformers" in req][0]
         autoawq_version = [req for req in _install_requires if "autoawq" in req][0]
         if "Darwin" in platform.system():
             # skip packages not compatible with OSX
@@ -69,11 +69,11 @@ def parse_requirements(extras_require_map):
                 # _install_requires.append("xformers==0.0.29.post3")  # xformers seems to be hard pinned to 2.6.0
                 extras_require_map["vllm"] = ["vllm==0.8.5.post1"]
             elif (major, minor) >= (2, 6):
-                _install_requires.pop(_install_requires.index(xformers_version))
-                _install_requires.append(
-                    "xformers==0.0.29.post2"
-                )  # vllm needs post2 w torch 2.6
-                extras_require_map["vllm"] = ["vllm==0.8.5.post1"]
+                #_install_requires.pop(_install_requires.index(xformers_version))
+                #_install_requires.append(
+                #    "xformers==0.0.29.post2"
+                #)  # vllm needs post2 w torch 2.6
+                #extras_require_map["vllm"] = ["vllm==0.8.5.post1"]
             elif (major, minor) >= (2, 5):
                 _install_requires.pop(_install_requires.index(xformers_version))
                 if patch == 0:
