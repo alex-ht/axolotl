@@ -73,7 +73,7 @@ def parse_requirements(extras_require_map):
                 #_install_requires.append(
                 #    "xformers==0.0.29.post2"
                 #)  # vllm needs post2 w torch 2.6
-                #extras_require_map["vllm"] = ["vllm==0.8.5.post1"]
+                extras_require_map["vllm"] = ["vllm==0.8.5.post1"]
             elif (major, minor) >= (2, 5):
                 _install_requires.pop(_install_requires.index(xformers_version))
                 if patch == 0:
