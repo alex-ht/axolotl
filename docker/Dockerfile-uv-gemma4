@@ -130,4 +130,6 @@ assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
 absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
 assert md.version('deep_ep').startswith('1.2.1'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
+import deep_ep; \
+assert deep_ep.Buffer is not None; \
 print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| CCE gemma4 patches present')"
