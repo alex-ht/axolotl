@@ -1,13 +1,67 @@
 # syntax=docker/dockerfile:1
-# Gemma-4 training image. Layers experiment tracking and the optional plugin
-# dependencies on top of the base axolotl image, which already carries everything
-# the Gemma-4 critical path needs (CCE fork with native gemma4 patches, in-tree
-# ScatterMoE, triton, bitsandbytes, torchao).
-# Base is axolotl-uv (axolotl + vLLM + FA4), not axolotl-base-uv: this image installs
-# no axolotl itself and its guard expects the CCE fork already present.
-ARG BASE_IMAGE=alexht/axolotl-uv
+# Self-contained Gemma-4 training image, built in one step from the CUDA/torch base.
+#
+# This duplicates Dockerfile-uv's axolotl install rather than layering on the
+# axolotl-uv image, so only one base has to be published. The two install blocks
+# must be kept in sync -- if you change Dockerfile-uv's extras, CCE step or vLLM/FA4
+# pins, mirror it here.
+ARG BASE_IMAGE=alexht/axolotl-base-uv
 ARG BASE_TAG=20260804
 FROM $BASE_IMAGE:$BASE_TAG
+
+ARG TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
+ARG AXOLOTL_EXTRAS=""
+ARG AXOLOTL_ARGS=""
+ARG CUDA="130"
+ARG PYTORCH_VERSION="2.11.0"
+ARG TORCH_BACKEND="cu130"
+ARG VLLM_VERSION="0.26.0"
+# b20+ hard-pin nvidia-cutlass-dsl==4.6.0.dev0, which collides with vllm's ==4.6.0
+ARG FLASH_ATTN_4_VERSION="4.0.0b19"
+ARG TARGETARCH
+
+ENV PYTORCH_VERSION=$PYTORCH_VERSION
+
+WORKDIR /workspace/axolotl
+
+COPY . .
+
+# If AXOLOTL_EXTRAS is set, append it in brackets; don't install deepspeed with arm64
+RUN uv pip uninstall causal_conv1d
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" && \
+    if [ "$TARGETARCH" = "arm64" ]; then \
+        BASE_EXTRAS="optimizers,ray"; \
+    else \
+        BASE_EXTRAS="deepspeed,optimizers,ray"; \
+    fi && \
+    if [ "$AXOLOTL_EXTRAS" != "" ]; then \
+        uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
+    else \
+        uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
+    fi && \
+    python scripts/cutcrossentropy_install.py --uv | sh && \
+    uv pip install pytest
+
+# vLLM and FA4 resolved together so their shared nvidia-cutlass-dsl pin is reconciled in
+# one pass. FA4 is a pure-Python wheel (CuTe DSL, JIT at runtime), so nothing compiles here
+# and FA2 is deliberately absent -- it is sdist-only and has no prebuilt wheel for torch 2.11.
+# xformers is pinned because only 0.0.35 relaxed its exact torch pin.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_TORCH_BACKEND=$TORCH_BACKEND uv pip install --prerelease=allow \
+        "vllm==${VLLM_VERSION}" \
+        "flash-attn-4==${FLASH_ATTN_4_VERSION}" \
+        "xformers==0.0.35"
+
+# fix so that git fetch/pull from remote works with shallow clone
+RUN git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" && \
+    git config --get remote.origin.fetch && \
+    git config --global credential.helper store
+
+COPY .axolotl-complete.bash /root/.axolotl-complete.bash
+RUN chmod +x /root/.axolotl-complete.bash && \
+    chmod +x /workspace/axolotl/scripts/uv-entrypoint.sh && \
+    echo 'source /root/.axolotl-complete.bash' >> ~/.bashrc
 
 # Experiment tracking. wandb, tensorboard and trackio are already core deps; these
 # are the two that are not. mlflow-skinny is the client half of the `mlflow` extra --
@@ -127,6 +181,9 @@ RUN python -c "\
 import importlib.metadata as md, importlib.util, torch; \
 assert torch.__version__.startswith('2.11.'), 'torch moved: ' + torch.__version__; \
 assert md.version('transformers') == '5.14.1', 'transformers moved: ' + md.version('transformers'); \
+fa = [x.replace('_', '-') for x in md.packages_distributions().get('flash_attn', [])]; \
+assert 'flash-attn-4' in fa, 'FA4 not registered: ' + repr(fa); \
+assert 'flash-attn' not in fa, 'FA2 present, will shadow FA4: ' + repr(fa); \
 from cut_cross_entropy.transformers.patch import AXOLOTL_CCE_FORK, PATCH_FNS; \
 assert AXOLOTL_CCE_FORK, 'CCE is not the axolotl fork'; \
 missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unified_text') if k not in PATCH_FNS]; \
@@ -136,4 +193,6 @@ assert not absent, 'missing modules: ' + repr(absent); \
 assert md.version('deep_ep').startswith('1.2.1'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
 import deep_ep; \
 assert deep_ep.Buffer is not None; \
-print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| CCE gemma4 patches present')"
+print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
+
+ENTRYPOINT ["/workspace/axolotl/scripts/uv-entrypoint.sh"]
