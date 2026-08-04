@@ -21,8 +21,9 @@ ARG DENSEMIXER_VERSION="1.0.1"
 ARG ORJSON_VERSION="3.11.9"
 ARG MATH_VERIFY_VERSION="0.9.0"
 
-# Gemma-4 checkpoints are large (26B/31B); hf_transfer is already installed.
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
+# Gemma-4 checkpoints are large (26B/31B). HF_HUB_ENABLE_HF_TRANSFER is deprecated on
+# huggingface_hub 1.x -- Xet superseded hf_transfer. Matches Dockerfile-cloud-uv.
+ENV HF_XET_HIGH_PERFORMANCE=1
 
 # Opt out of axolotl's telemetry (telemetry/manager.py accepts "1" or "true").
 ENV AXOLOTL_DO_NOT_TRACK=1
