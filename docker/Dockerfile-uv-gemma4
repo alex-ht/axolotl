@@ -3,8 +3,11 @@
 # dependencies on top of the base axolotl image, which already carries everything
 # the Gemma-4 critical path needs (CCE fork with native gemma4 patches, in-tree
 # ScatterMoE, triton, bitsandbytes, torchao).
-ARG BASE_TAG=main
-FROM axolotlai/axolotl-uv:$BASE_TAG
+# Base is axolotl-uv (axolotl + vLLM + FA4), not axolotl-base-uv: this image installs
+# no axolotl itself and its guard expects the CCE fork already present.
+ARG BASE_IMAGE=alexht/axolotl-uv
+ARG BASE_TAG=20260804
+FROM $BASE_IMAGE:$BASE_TAG
 
 # Experiment tracking. wandb, tensorboard and trackio are already core deps; these
 # are the two that are not. mlflow-skinny is the client half of the `mlflow` extra --
