@@ -2,11 +2,15 @@
 ARG BASE_TAG=main-base
 FROM axolotlai/axolotl-base-uv:$BASE_TAG
 
-ARG TORCH_CUDA_ARCH_LIST="7.0 7.5 8.0 8.6+PTX"
+ARG TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
 ARG AXOLOTL_EXTRAS=""
 ARG AXOLOTL_ARGS=""
-ARG CUDA="118"
-ARG PYTORCH_VERSION="2.1.2"
+ARG CUDA="130"
+ARG PYTORCH_VERSION="2.11.0"
+ARG TORCH_BACKEND="cu130"
+ARG VLLM_VERSION="0.26.0"
+# b20+ hard-pin nvidia-cutlass-dsl==4.6.0.dev0, which collides with vllm's ==4.6.0
+ARG FLASH_ATTN_4_VERSION="4.0.0b19"
 ARG TARGETARCH
 
 ENV PYTORCH_VERSION=$PYTORCH_VERSION
@@ -31,6 +35,27 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi && \
     python scripts/cutcrossentropy_install.py --uv | sh && \
     uv pip install pytest
+
+# vLLM and FA4 resolved together so their shared nvidia-cutlass-dsl pin is reconciled in
+# one pass. FA4 is a pure-Python wheel (CuTe DSL, JIT at runtime), so nothing compiles here
+# and FA2 is deliberately absent -- it is sdist-only and has no prebuilt wheel for torch 2.11.
+# xformers is pinned because only 0.0.35 relaxed its exact torch pin.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    UV_TORCH_BACKEND=$TORCH_BACKEND uv pip install --prerelease=allow \
+        "vllm==${VLLM_VERSION}" \
+        "flash-attn-4==${FLASH_ATTN_4_VERSION}" \
+        "xformers==0.0.35"
+
+# Guard the exact breakage this pin set exists to prevent: a transitive dep silently moving
+# torch off 2.11.x, or FA2 landing and shadowing FA4's flash_attn/cute (transformers resolves
+# FA2 vs FA4 by distribution name, so the owner of `flash_attn` is what matters).
+RUN python -c "\
+import importlib.metadata as md, torch; \
+assert torch.__version__.startswith('2.11.'), 'torch moved: ' + torch.__version__; \
+d = [x.replace('_', '-') for x in md.packages_distributions().get('flash_attn', [])]; \
+assert 'flash-attn-4' in d, 'FA4 not registered: ' + repr(d); \
+assert 'flash-attn' not in d, 'FA2 present, will shadow FA4: ' + repr(d); \
+print('ok: torch', torch.__version__, '| flash_attn owned by', d)"
 
 # fix so that git fetch/pull from remote works with shallow clone
 RUN git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" && \
