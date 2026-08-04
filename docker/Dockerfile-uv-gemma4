@@ -7,7 +7,11 @@ ARG BASE_TAG=main
 FROM axolotlai/axolotl-uv:$BASE_TAG
 
 # Experiment tracking. wandb, tensorboard and trackio are already core deps; these
-# are the two that are not. Matches the `mlflow` extra in pyproject.toml.
+# are the two that are not. mlflow-skinny is the client half of the `mlflow` extra --
+# it drops the tracking server and its data-science stack (Flask, sqlalchemy,
+# alembic, gunicorn, pandas, pyarrow, scikit-learn, matplotlib), which a training
+# container that logs to a remote server never uses. Swap in `mlflow` if you want to
+# run `mlflow ui` inside this image.
 ARG MLFLOW_VERSION="3.15.1"
 ARG SWANLAB_VERSION="0.9.2"
 
@@ -20,6 +24,9 @@ ARG MATH_VERIFY_VERSION="0.9.0"
 # Gemma-4 checkpoints are large (26B/31B); hf_transfer is already installed.
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
+# Opt out of axolotl's telemetry (telemetry/manager.py accepts "1" or "true").
+ENV AXOLOTL_DO_NOT_TRACK=1
+
 # Deliberately NOT installed:
 #   llmcompressor - pins transformers<=5.10.1, which would downgrade the pinned
 #                   5.14.1 and take native flash_attention_4 dispatch with it
@@ -30,7 +37,7 @@ ENV HF_HUB_ENABLE_HF_TRANSFER=1
 #   sf_layout     - not published on PyPI at all (gates part of the FP4 CuTe path)
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install \
-        "mlflow==${MLFLOW_VERSION}" \
+        "mlflow-skinny==${MLFLOW_VERSION}" \
         "swanlab==${SWANLAB_VERSION}" \
         "densemixer==${DENSEMIXER_VERSION}" \
         "orjson==${ORJSON_VERSION}" \
