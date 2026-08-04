@@ -21,11 +21,12 @@ backends, axolotl-registered backends, or a hub-kernel path.
 | `sdpa` | PyTorch `scaled_dot_product_attention`. No packing support. |
 | `flash_attention_2` | Dao-AILab Flash Attention 2. |
 | `flash_attention_3` | Dao-AILab Flash Attention 3 (Hopper+). |
+| `flash_attention_4` | Dao-AILab Flash Attention 4 (Hopper/Blackwell). Pure-Python CuTe DSL kernels, JIT-compiled at runtime. |
 | `flex_attention` | Torch Flex Attention (requires torch ≥ 2.6). |
 | `xformers` | xFormers memory-efficient attention. |
 | `sage` | SageAttention (QK int8 / PV fp16). |
-| `s2` | Shifted-Sparse Attention (LLaMA only, FA2 under the hood). |
 | `fp8` | torchao FP8 low-precision attention (requires SM90+, torch ≥ 2.11). Loaded as SDPA and patched post-load. |
+| `kernels-community/flash-attn2` | HF hub FA2 kernel. |
 | `kernels-community/flash-attn3` | HF hub FA3 kernel. |
 | `kernels-community/sage-attention` | HF hub SageAttention kernel. |
 | Other `<org>/<name>` path | Any hub-kernel path supported by `transformers`. |
@@ -94,14 +95,43 @@ python setup.py install
 
 #### Flash Attention 4
 
-Requirements: Hopper or Blackwell GPUs. Auto-applied when `attn_uses_flash_lib`
-is true and FA4 is importable.
+Requirements: Hopper or Blackwell GPUs (SM90/SM100/SM110). Supports varlen sample
+packing. There are two ways to enable it:
+
+**Set it directly.** FA4 is a first-class backend in `transformers`, so this needs
+only `flash-attn-4` installed — not FA2:
+
+```yaml
+attn_implementation: flash_attention_4
+```
+
+This route does not set `attn_uses_flash_lib`, so it cannot be combined with
+`context_parallel_size > 1` — ring-attention needs the FA2 library. Use
+`flash_attention_2` for context-parallel runs.
+
+**Or let axolotl upgrade FA2 to FA4.** With `attn_implementation: flash_attention_2`
+(or `_3`), axolotl redirects the FA2 imports to FA4 when it is importable on
+supported hardware, and falls back to FA2 when the model's head dimensions are
+unsupported. This route expects FA2 to be installed too — `transformers` resolves
+FA2 vs FA4 by *distribution* name, so with only `flash-attn-4` present it treats
+`flash_attention_2` as unavailable and substitutes the
+`kernels-community/flash-attn2` hub kernel (which downloads at model load).
 
 FA4 is still a pre-release on PyPI, so `--pre` is required:
 
 ```bash
 pip install --pre flash-attn-4
 ```
+
+::: {.callout-warning}
+
+FA4 and vLLM both pin `nvidia-cutlass-dsl` exactly, and the pins do not always
+agree — `flash-attn-4` 4.0.0b20 and later require `==4.6.0.dev0`, while vLLM 0.26.0
+requires `==4.6.0`. To install both into one environment, resolve them in a single
+pass and pick an FA4 build whose pin is compatible (4.0.0b19 uses a loose
+`>=4.5.2`).
+
+:::
 
 Or from source:
 
@@ -110,8 +140,9 @@ git clone https://github.com/Dao-AILab/flash-attention.git
 cd flash-attention/flash_attn/cute
 pip install -e .
 
-# FA2's flash_attn package includes a cute/ stub that shadows FA4.
-# Remove it so Python can find the real FA4 module:
+# FA2 vendors its own copy of the cute/ tree, so flash-attn and flash-attn-4 both own
+# the flash_attn/cute/ path and whichever installs last wins. Remove FA2's copy so
+# Python finds the real FA4 module:
 rm -r $(python -c "import flash_attn; print(flash_attn.__path__[0])")/cute
 ```
 
@@ -125,8 +156,10 @@ for training on Hopper, install from source using the instructions above.
 ::: {.callout-warning}
 
 FA4 only supports head dimensions up to 128 (`d ≤ 128`). The DeepSeek shape `(192, 128)` is
-also supported but only on Blackwell. Axolotl automatically detects incompatible head dimensions
-and falls back to FA2/3.
+also supported but only on Blackwell. On the `flash_attention_2` auto-upgrade route axolotl
+detects incompatible head dimensions and falls back to FA2/3. Setting
+`attn_implementation: flash_attention_4` skips that check — the model then has to satisfy
+FA4's constraints on its own.
 
 :::
 
