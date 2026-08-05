@@ -147,20 +147,10 @@ description: Frequently asked questions
 
 **Q: `flex_attention` OOMs on H100 with a Triton shared-memory error, even though there's plenty of VRAM free**
 
-> A: Triton's autotuner can pick a block-size config whose working set exceeds H100's 232KB per-SM
-> shared memory, independent of how much VRAM is free. Force smaller blocks:
->
-> ```yaml
-> attn_implementation: flex_attention
-> flex_attn_kernel_options:
->   BLOCK_M: 16
->   BLOCK_N: 16
->   num_stages: 1
->   num_warps: 4
-> ```
->
-> This trades some throughput for headroom — with these values, SRAM usage for the Q/K/V tiles plus
-> accumulator drops to roughly 80KB, well under the 232KB limit. Tune upward if your shapes have room.
+> A: Triton's autotuner picked a block-size config that exceeds H100's 232KB per-SM shared memory,
+> independent of free VRAM. Force smaller blocks with `flex_attn_kernel_options` — see
+> [Attention: Overriding Triton kernel options](attention.qmd#overriding-triton-kernel-options) for
+> the exact values and tradeoffs.
 
 **Q: `ValueError("Backward pass should have cleared tracker of all tensors")`
 

@@ -68,6 +68,13 @@ attn_implementation: flex_attention
 flex_attn_compile_kwargs:
   dynamic: false
   mode: max-autotune-no-cudagraphs
+# If flex_attention OOMs with a Triton shared-memory error on this H100 (some shapes autotune
+# to a block config over the 232KB per-SM limit), force smaller blocks:
+# flex_attn_kernel_options:
+#   BLOCK_M: 16
+#   BLOCK_N: 16
+#   num_stages: 1
+#   num_warps: 4
 
 gradient_checkpointing: offload
 gradient_checkpointing_kwargs:
