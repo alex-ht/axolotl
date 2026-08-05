@@ -851,9 +851,9 @@ class AxolotlInputConfig(
     gemma4_hybrid_attn_impl: bool | None = Field(
         default=None,
         json_schema_extra={
-            "description": "Use hybrid attention for Gemma 4: flash_attention_2 or flash_attention_4 for "
-            "sliding window layers and sdpa for global (full_attention) layers. Global layers have "
-            "head_dim=512 which exceeds both backends' supported size."
+            "description": "Use hybrid attention for Gemma 4: flash_attention_2, flash_attention_4, or "
+            "flex_attention for sliding window layers, and sdpa for global (full_attention) layers. "
+            "Global layers have head_dim=512 which exceeds the flash backends' supported size."
         },
     )
 
@@ -1532,15 +1532,22 @@ class AxolotlInputConfig(
         attn_impl = data.get("attn_implementation")
         set_flags = [f for f in LEGACY_ATTN_FLAG_TO_IMPL if data.get(f)]
 
-        # gemma4_hybrid runs the sliding-window layers under a flash backend; post-load
-        # patching swaps global layers to sdpa (see `_apply_gemma_hybrid_attention`).
-        # FA4 supports the sliding layers' head_dim=256 (SM90's range tops out at 256;
-        # SM100/SM110 have a dedicated (256, 256) kernel), and transformers maps
-        # flash_attention_4 through the same mask builder as FA2/FA3, so the hybrid mask
-        # patch (which dispatches on config._attn_implementation, not a literal string)
-        # applies unchanged. Default FA2 in when the user didn't pick a backend; reject
-        # any other explicit choice.
-        _GEMMA4_HYBRID_ATTN_IMPLS = ("flash_attention_2", "flash_attention_4")
+        # gemma4_hybrid runs the sliding-window layers under one of these backends;
+        # post-load patching swaps global layers to sdpa unconditionally (see
+        # `_apply_gemma_hybrid_attention` / `gemma4_hybrid_mask.hybrid_create_causal_mask`,
+        # which forces the global mask to sdpa format regardless of the top-level
+        # backend). FA4 supports the sliding layers' head_dim=256 (SM90's range tops
+        # out at 256; SM100/SM110 have a dedicated (256, 256) kernel). flex_attention
+        # has no such ceiling -- it's a torch.compile'd Triton template, not a fixed
+        # set of head-dim-specific CUDA kernels like flash-attn -- and the sliding
+        # layers' own mask (create_sliding_window_causal_mask, left unpatched)
+        # already dispatches generically on whatever backend is active. Default FA2
+        # in when the user didn't pick a backend; reject any other explicit choice.
+        _GEMMA4_HYBRID_ATTN_IMPLS = (
+            "flash_attention_2",
+            "flash_attention_4",
+            "flex_attention",
+        )
         if data.get("gemma4_hybrid_attn_impl"):
             if not attn_impl and not set_flags:
                 data["attn_implementation"] = "flash_attention_2"

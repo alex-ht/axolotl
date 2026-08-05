@@ -333,7 +333,8 @@ class TestCanonicalValueAcceptance:
 
 class TestGemma4HybridMode:
     """`gemma4_hybrid_attn_impl` restricts `attn_implementation` to the sliding-window
-    layers' flash backends (flash_attention_2, flash_attention_4); defaults to FA2."""
+    layers' supported backends (flash_attention_2, flash_attention_4, flex_attention);
+    defaults to FA2."""
 
     @staticmethod
     def _normalize(data):
@@ -360,6 +361,15 @@ class TestGemma4HybridMode:
             }
         )
         assert result["attn_implementation"] == "flash_attention_4"
+
+    def test_explicit_flex_attention_passes(self):
+        result = self._normalize(
+            {
+                "gemma4_hybrid_attn_impl": True,
+                "attn_implementation": "flex_attention",
+            }
+        )
+        assert result["attn_implementation"] == "flex_attention"
 
     def test_non_flash_raises(self):
         with pytest.raises(
