@@ -211,6 +211,18 @@ class AttentionValidationMixin:
             )
         return self
 
+    @model_validator(mode="after")
+    def check_flex_attn_kernel_options_requires_flex(self):
+        if (
+            self.flex_attn_kernel_options
+            and self.attn_implementation != "flex_attention"
+        ):
+            raise ValueError(
+                "flex_attn_kernel_options requires flex attention. "
+                "Add `attn_implementation: flex_attention` to your config."
+            )
+        return self
+
 
 class TrainingValidationMixin:
     """Validation methods related to training configuration."""

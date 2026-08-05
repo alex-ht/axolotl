@@ -177,6 +177,10 @@ torch_compile: true  # recommended
 
 Requires torch ≥ 2.6. See [PyTorch docs](https://pytorch.org/blog/flexattention/).
 
+On H100, Triton's autotuner can pick a block size for `flex_attention` that overflows the 232KB
+per-SM shared memory limit and OOMs regardless of free VRAM. If you hit that, force smaller blocks
+via `flex_attn_kernel_options` — see the [FAQ](faq.qmd) for the exact values.
+
 ### SageAttention
 
 Requirements: Ampere, Ada, or Hopper GPUs.

@@ -126,6 +126,7 @@ class PatchManager:
         self._apply_torchao_patches()
         self._apply_transformers_patches()
         # self._apply_flex_attention_patches()
+        self._apply_flex_attn_kernel_options_patch()
         self._apply_flash_attention_patches()
         self._apply_chunked_cross_entropy_patch()
         self._apply_sageattn_patches()
@@ -475,6 +476,18 @@ class PatchManager:
 
             flex_attn_compile_kwargs = self.cfg.flex_attn_compile_kwargs or {}
             patch_flex_wrapper(**flex_attn_compile_kwargs)
+
+    def _apply_flex_attn_kernel_options_patch(self):
+        """Force flex_attention's Triton kernel_options when the user opts in via
+        flex_attn_kernel_options (e.g. the H100 shared-memory OOM workaround)."""
+        if self.cfg.attn_implementation != "flex_attention":
+            return
+        if not self.cfg.flex_attn_kernel_options:
+            return
+
+        from axolotl.monkeypatch.attention.flex_attn import patch_flex_kernel_options
+
+        patch_flex_kernel_options(self.cfg.flex_attn_kernel_options)
 
     def _apply_sageattn_patches(self):
         """Apply patches for SageAttention."""

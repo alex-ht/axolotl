@@ -800,6 +800,19 @@ class AxolotlInputConfig(
         deprecated="Use `attn_implementation: flex_attention` instead.",
     )
     flex_attn_compile_kwargs: dict[str, Any] | None = None
+    flex_attn_kernel_options: dict[str, Any] | None = Field(
+        default=None,
+        json_schema_extra={
+            "description": (
+                "Override Triton's autotuned kernel_options (BLOCK_M, BLOCK_N, num_stages, "
+                "num_warps, ...) for every flex_attention call. Workaround for H100 Triton "
+                "shared-memory OOM on some shapes: the autotuned config can exceed the "
+                "232KB per-SM limit, and smaller blocks (e.g. BLOCK_M: 16, BLOCK_N: 16, "
+                "num_stages: 1, num_warps: 4) trade some throughput to fit. Requires "
+                "attn_implementation: flex_attention."
+            )
+        },
+    )
     flash_attention: bool | None = Field(
         default=None,
         deprecated="Use `attn_implementation: flash_attention_2` instead.",

@@ -1,6 +1,7 @@
 """Flex attention monkey patch"""
 
 import sys
+from typing import Any
 
 import torch
 import transformers
@@ -10,6 +11,8 @@ from transformers.utils.import_utils import _torch_version, is_torch_less_or_equ
 from axolotl.utils.logging import get_logger
 
 LOG = get_logger(__name__)
+
+_KERNEL_OPTIONS_ORIG_ATTR = "_axolotl_flex_kernel_options_original"
 
 
 def patch_flex_wrapper(**flex_attn_compile_kwargs):
@@ -80,3 +83,46 @@ def patch_flex_wrapper(**flex_attn_compile_kwargs):
     sys.modules[
         "transformers.integrations.flex_attention"
     ].WrappedFlexAttention = WrappedFlexAttention
+
+
+def patch_flex_kernel_options(kernel_options: dict[str, Any]) -> bool:
+    """Force ``kernel_options`` (e.g. ``BLOCK_M``/``BLOCK_N``/``num_stages``/``num_warps``) onto every
+    ``flex_attention`` call, overriding Triton's autotuned block sizes. Needed on H100, where the
+    autotuned config for some shapes exceeds the 232KB per-SM shared memory limit and flex_attention
+    OOMs; smaller blocks (e.g. BLOCK_M=BLOCK_N=16) trade some throughput to fit. Idempotent — a config
+    already carrying our marker is left alone rather than double-wrapped."""
+    from transformers.integrations.flex_attention import (
+        flex_attention_forward as original,
+    )
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    current = ALL_ATTENTION_FUNCTIONS["flex_attention"]
+    if getattr(current, _KERNEL_OPTIONS_ORIG_ATTR, None) is not None:
+        return True
+
+    def flex_attention_forward_with_kernel_options(
+        module, query, key, value, attention_mask, **kwargs
+    ):
+        kwargs.setdefault("kernel_options", kernel_options)
+        return original(module, query, key, value, attention_mask, **kwargs)
+
+    setattr(
+        flex_attention_forward_with_kernel_options, _KERNEL_OPTIONS_ORIG_ATTR, original
+    )
+    ALL_ATTENTION_FUNCTIONS.register(
+        "flex_attention", flex_attention_forward_with_kernel_options
+    )
+    LOG.info(
+        "flex_attn_kernel_options: forcing kernel_options=%s on every flex_attention call",
+        kernel_options,
+    )
+    return True
+
+
+def unpatch_flex_kernel_options() -> None:
+    from transformers.modeling_utils import ALL_ATTENTION_FUNCTIONS
+
+    current = ALL_ATTENTION_FUNCTIONS["flex_attention"]
+    original = getattr(current, _KERNEL_OPTIONS_ORIG_ATTR, None)
+    if original is not None:
+        ALL_ATTENTION_FUNCTIONS.register("flex_attention", original)

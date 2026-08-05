@@ -145,6 +145,23 @@ description: Frequently asked questions
 >   mode: max-autotune-no-cudagraphs
 > ```
 
+**Q: `flex_attention` OOMs on H100 with a Triton shared-memory error, even though there's plenty of VRAM free**
+
+> A: Triton's autotuner can pick a block-size config whose working set exceeds H100's 232KB per-SM
+> shared memory, independent of how much VRAM is free. Force smaller blocks:
+>
+> ```yaml
+> attn_implementation: flex_attention
+> flex_attn_kernel_options:
+>   BLOCK_M: 16
+>   BLOCK_N: 16
+>   num_stages: 1
+>   num_warps: 4
+> ```
+>
+> This trades some throughput for headroom — with these values, SRAM usage for the Q/K/V tiles plus
+> accumulator drops to roughly 80KB, well under the 232KB limit. Tune upward if your shapes have room.
+
 **Q: `ValueError("Backward pass should have cleared tracker of all tensors")`
 
 > A: This may happen due to edge cases in using the modern OffloadActivations context manager for CUDA streams. If you encounter this error, you may have success using the naive implementation with `offload_activations: legacy` in your YAML.
