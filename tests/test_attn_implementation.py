@@ -332,7 +332,8 @@ class TestCanonicalValueAcceptance:
 
 
 class TestGemma4HybridMode:
-    """`gemma4_hybrid_attn_impl` pins `attn_implementation` to `flash_attention_2`."""
+    """`gemma4_hybrid_attn_impl` restricts `attn_implementation` to the sliding-window
+    layers' flash backends (flash_attention_2, flash_attention_4); defaults to FA2."""
 
     @staticmethod
     def _normalize(data):
@@ -351,9 +352,18 @@ class TestGemma4HybridMode:
         )
         assert result["attn_implementation"] == "flash_attention_2"
 
-    def test_non_fa2_raises(self):
+    def test_explicit_fa4_passes(self):
+        result = self._normalize(
+            {
+                "gemma4_hybrid_attn_impl": True,
+                "attn_implementation": "flash_attention_4",
+            }
+        )
+        assert result["attn_implementation"] == "flash_attention_4"
+
+    def test_non_flash_raises(self):
         with pytest.raises(
-            ValueError, match="requires attn_implementation=flash_attention_2"
+            ValueError, match="requires attn_implementation to be one of"
         ):
             self._normalize(
                 {"gemma4_hybrid_attn_impl": True, "attn_implementation": "sdpa"}
