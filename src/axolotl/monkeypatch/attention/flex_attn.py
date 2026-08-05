@@ -6,7 +6,6 @@ from typing import Any
 import torch
 import transformers
 from packaging import version
-from transformers.utils.import_utils import _torch_version, is_torch_less_or_equal
 
 from axolotl.utils.logging import get_logger
 
@@ -22,7 +21,12 @@ def patch_flex_wrapper(**flex_attn_compile_kwargs):
     if not is_torch_2_6:
         return
 
+    # Lazy: transformers has since dropped _torch_version from this module's public surface
+    # (renamed to get_torch_version), so importing it at module level would break every caller
+    # of this file, not just torch-2.6 users. Only this branch (dead on the pinned torch 2.11)
+    # still needs it.
     from torch.nn.attention.flex_attention import flex_attention
+    from transformers.utils.import_utils import _torch_version, is_torch_less_or_equal
 
     class WrappedFlexAttention:
         """
