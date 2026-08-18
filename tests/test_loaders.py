@@ -102,6 +102,19 @@ class TestModelsUtils:
                 is True
             )
 
+    def test_nemotron_h_qlora_skips_out_proj_and_lm_head(self):
+        self.cfg.adapter = "qlora"
+        self.cfg.load_in_4bit = True
+        self.cfg.load_in_8bit = False
+        self.cfg.model_config_type = "nemotron_h"
+        self.cfg.torch_dtype = "bfloat16"
+
+        self.model_loader._set_quantization_config()
+
+        quant = self.model_loader.model_kwargs["quantization_config"]
+        assert isinstance(quant, BitsAndBytesConfig)
+        assert quant.llm_int8_skip_modules == ["out_proj", "lm_head"]
+
     def test_message_property_mapping(self):
         """Test message property mapping configuration validation"""
         from axolotl.utils.schemas.datasets import SFTDataset

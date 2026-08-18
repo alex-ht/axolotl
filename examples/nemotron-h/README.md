@@ -61,3 +61,11 @@ lora_target_parameters:
 
 - **Routed experts**: `lora_mlp_kernel` only patches dense/shared modules. Routed 3D expert tensors retain their existing PEFT or configured MoE backend; enabling dense MLP kernels does not optimize these routed expert tensors.
 - **Sample packing / context parallelism**: requires `mamba-ssm` and `causal-conv1d`; see Requirements above.
+
+## Training notes
+
+- Do **not** set `trust_remote_code: true`. transformers already registers native `nemotron_h`. The Hub `auto_map` modeling file hard-imports `mamba_ssm` and fails if that package is missing.
+- Install local `mamba-ssm` and `causal-conv1d` (or set `use_kernels: true`); the transformers torch fallbacks drop `seq_idx` and packing refuses to run without real kernels.
+- QLoRA automatically leaves `out_proj` and `lm_head` in bf16. The fused Mamba2 kernel and Cut Cross Entropy both read those weights as raw tensors; 4-bit packed storage breaks the shapes.
+- FSDP2 `offload_params` keeps `NemotronHTopkRouter.e_score_correction_bias` on CPU. Axolotl copies it onto the compute device in the router forward; do not assign the moved tensor back onto the module.
+- If the image has `flash-attn-4` but not classic `flash-attn`, set `attn_implementation: flash_attention_4`. Requesting `flash_attention_2` remaps to a Hub kernel name that is unregistered when Hub kernels are disabled.

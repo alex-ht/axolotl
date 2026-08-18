@@ -1144,6 +1144,8 @@ class ModelLoader:
             if self.cfg.model_config_type == "falcon_h1":
                 # output projection cannot be quantized for Falcon-H1 models
                 bnb_config["llm_int8_skip_modules"] = ["out_proj"]
+            if self.cfg.model_config_type == "nemotron_h":
+                bnb_config["llm_int8_skip_modules"] = ["out_proj", "lm_head"]
             self.model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 **bnb_config,
             )

@@ -586,11 +586,15 @@ class PatchManager:
             from axolotl.monkeypatch.models.nemotron_h.modeling import (
                 guard_nemotron_h_fused_scan,
                 patch_nemotron_h_modeling_packing,
+                patch_nemotron_h_router_bias_device,
             )
 
             # The fused Mamba2 kernel applies out_proj itself, which a
             # quantized weight cannot serve; guard it for every run.
             guard_nemotron_h_fused_scan()
+            # FSDP2 offload_params leaves the router's e_score_correction_bias
+            # buffer on CPU; the router fix is independent of sample packing.
+            patch_nemotron_h_router_bias_device()
 
             if packed_boundaries_needed:
                 patch_nemotron_h_modeling_packing(
