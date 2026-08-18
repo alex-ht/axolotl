@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1
-# Self-contained Gemma-4 training image, built in one step from the CUDA/torch base.
+# Self-contained AFS training image (Gemma-4, Mamba/SSM, and other models),
+# built in one step from the CUDA/torch base.
 #
 # This duplicates Dockerfile-uv's axolotl install rather than layering on the
 # axolotl-uv image, so only one base has to be published. The two install blocks
@@ -21,12 +22,16 @@ ARG FLASH_ATTN_4_VERSION="4.0.0b19"
 ARG TARGETARCH
 
 ENV PYTORCH_VERSION=$PYTORCH_VERSION
+# Hardlinks from a uv cache mount into the image layer break on overlayfs.
+ENV UV_LINK_MODE=copy
 
 WORKDIR /workspace/axolotl
 
 COPY . .
 
-# If AXOLOTL_EXTRAS is set, append it in brackets; don't install deepspeed with arm64
+# Drop the base image's causal_conv1d (SKIP_CUDA_BUILD / often ABI-mismatched).
+# A real CUDA build is installed in the next layer.
+# If AXOLOTL_EXTRAS is set, append it in brackets; don't install deepspeed on arm64.
 RUN uv pip uninstall causal_conv1d
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" && \
@@ -42,6 +47,34 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi && \
     python scripts/cutcrossentropy_install.py --uv | sh && \
     uv pip install pytest
+
+# PyPI sdists omit csrc/. Clone full trees and FORCE_BUILD against the
+# venv torch. The alex-ht fork defaults to no CUDA ext; KEEP_CUDA_BUILD
+# is required to compile selective_scan_cuda.
+# --no-config: skip pyproject extra-build-dependencies match-runtime.
+ARG CAUSAL_CONV1D_REF="v1.5.3.post1"
+ARG MAMBA_MAX_JOBS="16"
+
+RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
+set -eux
+if [ "${TARGETARCH}" = "arm64" ]; then
+  exit 0
+fi
+
+git clone --depth 1 --branch "${CAUSAL_CONV1D_REF}" \
+    https://github.com/Dao-AILab/causal-conv1d.git /tmp/causal-conv1d
+cd /tmp/causal-conv1d
+CAUSAL_CONV1D_FORCE_BUILD=TRUE MAX_JOBS="${MAMBA_MAX_JOBS}" \
+  uv pip install --no-build-isolation --no-config .
+cd / && rm -rf /tmp/causal-conv1d
+
+git clone --depth 1 --branch afs \
+    https://github.com/alex-ht/mamba.git /tmp/mamba
+cd /tmp/mamba
+MAMBA_FORCE_BUILD=TRUE MAMBA_KEEP_CUDA_BUILD=TRUE MAX_JOBS="${MAMBA_MAX_JOBS}" \
+  uv pip install --no-build-isolation --no-config .
+cd / && rm -rf /tmp/mamba
+SHELL
 
 # vLLM and FA4 resolved together so their shared nvidia-cutlass-dsl pin is reconciled in
 # one pass. FA4 is a pure-Python wheel (CuTe DSL, JIT at runtime), so nothing compiles here
@@ -78,8 +111,9 @@ ARG DENSEMIXER_VERSION="1.0.1"
 ARG ORJSON_VERSION="3.11.9"
 ARG MATH_VERIFY_VERSION="0.9.0"
 
-# Gemma-4 checkpoints are large (26B/31B). HF_HUB_ENABLE_HF_TRANSFER is deprecated on
-# huggingface_hub 1.x -- Xet superseded hf_transfer. Matches Dockerfile-cloud-uv.
+# Large checkpoints (Gemma-4 26B/31B, Nemotron-H, …). HF_HUB_ENABLE_HF_TRANSFER is
+# deprecated on huggingface_hub 1.x -- Xet superseded hf_transfer. Matches
+# Dockerfile-cloud-uv.
 ENV HF_XET_HIGH_PERFORMANCE=1
 
 # Opt out of axolotl's telemetry (telemetry/manager.py accepts "1" or "true").
@@ -175,8 +209,9 @@ cd / && rm -rf /tmp/DeepEP
 SHELL
 
 # Fail the build rather than a training run if any of the above moved the pinned
-# HF/torch stack, and confirm the Gemma-4 pieces the examples depend on are wired
-# up. Kept CUDA-free so it runs on a GPU-less builder.
+# HF/torch stack, and confirm Gemma-4 CCE patches plus mamba-ssm are
+# wired up. find_spec only -- importing mamba_ssm/causal_conv1d loads CUDA
+# extensions and would fail on a GPU-less builder.
 RUN python -c "\
 import importlib.metadata as md, importlib.util, torch; \
 assert torch.__version__.startswith('2.11.'), 'torch moved: ' + torch.__version__; \
@@ -188,11 +223,13 @@ from cut_cross_entropy.transformers.patch import AXOLOTL_CCE_FORK, PATCH_FNS; \
 assert AXOLOTL_CCE_FORK, 'CCE is not the axolotl fork'; \
 missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unified_text') if k not in PATCH_FNS]; \
 assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
-absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes') if importlib.util.find_spec(m) is None]; \
+absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
+assert md.version('mamba_ssm').startswith('2.3.2'), 'unexpected mamba-ssm: ' + md.version('mamba_ssm'); \
+assert md.version('causal_conv1d').startswith('1.5.3'), 'unexpected causal-conv1d: ' + md.version('causal_conv1d'); \
 assert md.version('deep_ep').startswith('1.2.1'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
 import deep_ep; \
 assert deep_ep.Buffer is not None; \
-print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
+print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| mamba-ssm', md.version('mamba_ssm'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
 
 ENTRYPOINT ["/workspace/axolotl/scripts/uv-entrypoint.sh"]
