@@ -2,17 +2,21 @@
 
 Threads seq_idx (derived from position_ids) into the Mamba2 SSM kernels so
 packed-sequence boundaries reset SSM state. Upstream hard-codes seq_idx=None,
-which leaks hidden state across boundaries. Attention and MoE blocks need no
-changes — only the Mamba2 mixer is patched.
+which leaks hidden state across boundaries.
 
 CP correction (ring-shift of SSM state + additive output fix) is handled by
 ``wrap_mamba_scan_for_cp`` from ``mamba_utils``, which wraps the
 ``mamba_chunk_scan_combined`` call at the module level.
+
+Also patches ``NemotronHBlock.forward`` for transformers 5.14+ mixer names
+and ``NemotronHTopkRouter.forward`` so FSDP2 ``offload_params`` does not
+leave ``e_score_correction_bias`` on CPU.
 """
 
 import importlib
 
 import torch
+import torch.nn.functional as F
 
 from axolotl.monkeypatch.models.mamba_utils import (
     ensure_mamba_kernels_loaded,
@@ -23,6 +27,10 @@ from axolotl.monkeypatch.models.mamba_utils import (
 from axolotl.utils.logging import get_logger
 
 LOG = get_logger(__name__)
+
+# transformers 5.14+ renamed mixers; keep pre-5.14 aliases.
+MAMBA_BLOCK_TYPES = frozenset({"linear_attention", "mamba"})
+ATTENTION_BLOCK_TYPES = frozenset({"full_attention", "attention"})
 
 
 def patch_nemotron_h_modeling_packing():
@@ -272,52 +280,130 @@ def patch_nemotron_h_modeling_packing():
 
     # Patch 3: NemotronHBlock.forward — compute seq_idx from position_ids and
     # pass it to the Mamba2 mixer. Skipped during decode (has_previous_state).
-    def patched_block_forward(
-        self,
-        hidden_states,
-        past_key_values=None,
-        cache_position=None,
-        attention_mask=None,
-        position_ids=None,
-        use_cache=False,
-        **kwargs,
-    ):
-        residual = hidden_states
-        hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
-
-        if self.block_type == "mamba":
-            is_decoding = (
-                past_key_values is not None and past_key_values.has_previous_state
-            )
-            seq_idx = (
-                get_seq_idx(position_ids)
-                if position_ids is not None and not is_decoding
-                else None
-            )
-            hidden_states = self.mixer(
-                hidden_states,
-                cache_params=past_key_values,
-                attention_mask=attention_mask,
-                seq_idx=seq_idx,
-            )
-        elif self.block_type == "attention":
-            hidden_states, _ = self.mixer(
-                hidden_states=hidden_states,
-                past_key_values=past_key_values,
-                attention_mask=attention_mask,
-                position_ids=position_ids,
-                user_cache=use_cache,
-                cache_position=cache_position,
-                **kwargs,
-            )
-        else:
-            hidden_states = self.mixer(hidden_states)
-
-        hidden_states = residual + hidden_states
-        return hidden_states
-
-    NemotronHBlock.forward = patched_block_forward
+    NemotronHBlock.forward = patched_nemotron_h_block_forward
 
     wrap_mamba_scan_for_cp(mod)
+    patch_nemotron_h_router_bias_device(mod)
 
     LOG.info("Applied NemotronH sample packing patch (seq_idx threading into Mamba2)")
+
+
+def patched_nemotron_h_block_forward(
+    self,
+    hidden_states,
+    past_key_values=None,
+    cache_position=None,
+    attention_mask=None,
+    position_ids=None,
+    use_cache=False,
+    **kwargs,
+):
+    residual = hidden_states
+    hidden_states = self.norm(hidden_states.to(dtype=self.norm.weight.dtype))
+
+    if self.block_type in MAMBA_BLOCK_TYPES:
+        is_decoding = past_key_values is not None and past_key_values.has_previous_state
+        seq_idx = (
+            get_seq_idx(position_ids)
+            if position_ids is not None and not is_decoding
+            else None
+        )
+        hidden_states = self.mixer(
+            hidden_states,
+            cache_params=past_key_values,
+            attention_mask=attention_mask,
+            seq_idx=seq_idx,
+        )
+    elif self.block_type in ATTENTION_BLOCK_TYPES:
+        hidden_states, _ = self.mixer(
+            hidden_states=hidden_states,
+            past_key_values=past_key_values,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
+            use_cache=use_cache,
+            cache_position=cache_position,
+            **kwargs,
+        )
+    else:
+        hidden_states = self.mixer(hidden_states)
+
+    if not isinstance(hidden_states, torch.Tensor):
+        raise TypeError(
+            f"NemotronHBlock mixer ({self.block_type!r}) returned "
+            f"{type(hidden_states).__name__}, expected Tensor"
+        )
+
+    hidden_states = residual + hidden_states
+    return hidden_states
+
+
+def patched_nemotron_h_router_forward(self, hidden_states):
+    hidden_dim = getattr(self, "hidden_dim", None)
+    if hidden_dim is None:
+        hidden_dim = self.config.hidden_size
+    num_experts = getattr(self, "num_experts", None) or self.n_routed_experts
+    num_group = getattr(self, "num_group", None) or self.n_group
+
+    hidden_states = hidden_states.view(-1, hidden_dim)
+    router_logits = F.linear(
+        hidden_states.type(torch.float32), self.weight.type(torch.float32)
+    )
+    scores = router_logits.sigmoid()
+    # Local copy: FSDP2 CPUOffloadPolicy never all-gathers register_buffer.
+    # Do not assign the moved tensor back onto the module.
+    bias = self.e_score_correction_bias.to(device=scores.device, dtype=torch.float32)
+    scores_for_choice = scores + bias
+    group_scores = (
+        scores_for_choice.view(-1, num_group, num_experts // num_group)
+        .topk(2, dim=-1)[0]
+        .sum(dim=-1)
+    )
+    group_idx = torch.topk(group_scores, k=self.topk_group, dim=-1, sorted=False)[1]
+    group_mask = torch.zeros_like(group_scores)
+    group_mask.scatter_(1, group_idx, 1)
+    score_mask = (
+        group_mask.unsqueeze(-1)
+        .expand(-1, num_group, num_experts // num_group)
+        .reshape(-1, num_experts)
+    )
+    scores_for_choice = scores_for_choice.masked_fill(~score_mask.bool(), float("-inf"))
+    topk_indices = torch.topk(scores_for_choice, k=self.top_k, dim=-1, sorted=False)[1]
+    topk_weights = scores.gather(1, topk_indices)
+    if self.norm_topk_prob:
+        denominator = topk_weights.sum(dim=-1, keepdim=True) + 1e-20
+        topk_weights = topk_weights / denominator
+    topk_weights = topk_weights * self.routed_scaling_factor
+    return router_logits, topk_weights, topk_indices
+
+
+def patch_nemotron_h_router_bias_device(mod=None):
+    """Keep router bias on the compute device under FSDP2 ``offload_params``.
+
+    ``e_score_correction_bias`` is a ``register_buffer``, so CPUOffloadPolicy
+    never all-gathers it. Adding it to CUDA scores then fails as CUDA+CPU.
+    Writing the moved tensor back onto the module also fails after FSDP2 wrap
+    (the name lives in ``_parameters``).
+    """
+    if mod is None:
+        try:
+            mod = importlib.import_module(
+                "transformers.models.nemotron_h.modeling_nemotron_h"
+            )
+        except ImportError:
+            LOG.warning(
+                "nemotron_h not found in transformers, skipping router bias patch"
+            )
+            return
+
+    router_cls = getattr(mod, "NemotronHTopkRouter", None) or getattr(
+        mod, "NemotronHTopKRouter", None
+    )
+    if router_cls is None:
+        LOG.warning("transformers.models.nemotron_h has no NemotronHTopkRouter")
+        return
+    if getattr(router_cls.forward, "_axolotl_offload_bias_fix", False):
+        return
+
+    patched_nemotron_h_router_forward._axolotl_offload_bias_fix = True
+    router_cls.forward = patched_nemotron_h_router_forward
+    LOG.info("Applied NemotronHTopkRouter device-local e_score_correction_bias patch")

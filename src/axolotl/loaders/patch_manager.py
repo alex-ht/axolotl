@@ -559,21 +559,26 @@ class PatchManager:
             self.cfg.sample_packing or self.cfg.context_parallel_size > 1
         )
 
-        if self.cfg.model_config_type == "nemotron_h" and ssm_hybrid_patch_needed:
-            from transformers.models.nemotron_h.modeling_nemotron_h import (
-                NemotronHPreTrainedModel,
-            )
-
+        if self.cfg.model_config_type == "nemotron_h":
             from axolotl.monkeypatch.models.nemotron_h.modeling import (
                 patch_nemotron_h_modeling_packing,
+                patch_nemotron_h_router_bias_device,
             )
 
-            patch_nemotron_h_modeling_packing()
-            # supports_gradient_checkpointing is only enabled after
-            # patch_nemotron_h_modeling_packing() installs the GC-compatible
-            # NemotronHBlock.forward. Without the patch, upstream marks this
-            # False because the original block forward is not GC-safe.
-            NemotronHPreTrainedModel.supports_gradient_checkpointing = True
+            if ssm_hybrid_patch_needed:
+                from transformers.models.nemotron_h.modeling_nemotron_h import (
+                    NemotronHPreTrainedModel,
+                )
+
+                patch_nemotron_h_modeling_packing()
+                # supports_gradient_checkpointing is only enabled after
+                # patch_nemotron_h_modeling_packing() installs the GC-compatible
+                # NemotronHBlock.forward. Without the patch, upstream marks this
+                # False because the original block forward is not GC-safe.
+                NemotronHPreTrainedModel.supports_gradient_checkpointing = True
+            else:
+                # Router bias device fix is independent of sample packing.
+                patch_nemotron_h_router_bias_device()
 
         if self.cfg.model_config_type == "falcon_h1" and ssm_hybrid_patch_needed:
             from axolotl.monkeypatch.models.falcon_h1.modeling import (

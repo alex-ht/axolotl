@@ -767,6 +767,9 @@ class ModelLoader:
             if self.cfg.model_config_type == "falcon_h1":
                 # output projection cannot be quantized for Falcon-H1 models
                 bnb_config["llm_int8_skip_modules"] = ["out_proj"]
+            if self.cfg.model_config_type == "nemotron_h":
+                # fused mamba kernel reads out_proj.weight raw; CCE reads lm_head.weight raw
+                bnb_config["llm_int8_skip_modules"] = ["out_proj", "lm_head"]
 
             if self.cfg.bnb_config_kwargs:
                 bnb_config.update(self.cfg.bnb_config_kwargs)
@@ -784,6 +787,8 @@ class ModelLoader:
             if self.cfg.model_config_type == "falcon_h1":
                 # output projection cannot be quantized for Falcon-H1 models
                 bnb_config["llm_int8_skip_modules"] = ["out_proj"]
+            if self.cfg.model_config_type == "nemotron_h":
+                bnb_config["llm_int8_skip_modules"] = ["out_proj", "lm_head"]
             self.model_kwargs["quantization_config"] = BitsAndBytesConfig(
                 **bnb_config,
             )

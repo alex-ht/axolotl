@@ -193,6 +193,26 @@ These have `hidden_size_per_layer_input: 256` (per-layer input embeddings) and `
       threshold: 1.3
   ```
 
+## Nemotron-H (Nemotron-3 Super / Nano)
+
+**Models**: `nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16`, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-BF16`
+
+Hybrid Mamba2 / Attention / LatentMoE (`model_type: nemotron_h`). See `examples/nemotron-h/`.
+
+### Required / auto-applied
+
+- `sample_packing: true` when using gradient checkpointing
+- `lora_qkv_kernel` / `lora_o_kernel` / `lora_mlp_kernel`: false (attention lives in `NemotronHBlock.mixer`; MLP act is `relu2`)
+- Do **not** set `trust_remote_code: true` — use native transformers 5.14+ `nemotron_h`
+- QLoRA auto-skips 4-bit on `out_proj` and `lm_head`
+- Packing patch accepts transformers 5.14+ block types (`linear_attention`, `full_attention`) plus older `mamba` / `attention` aliases
+- Router `e_score_correction_bias` is copied to the compute device (FSDP2 `offload_params`)
+- Local `mamba-ssm` / `causal-conv1d` are preferred over Hub kernel download (no `USE_HUB_KERNELS=0` required when those packages import)
+
+### Attention
+
+`NemotronHAttention` looks up `config._attn_implementation` directly. If the environment has flash-attn-4 but not classic flash-attn, use `attn_implementation: flash_attention_4`.
+
 ## General MoE Notes
 
 - `lora_target_linear: true` with multimodal MoE models will apply LoRA to ALL linear modules including vision/audio encoders — use regex `lora_target_modules` to restrict to language model only

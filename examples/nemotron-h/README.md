@@ -46,3 +46,12 @@ lora_target_parameters:
 
 - **MoE Triton kernels**: `lora_mlp_kernel` is not supported for NemotronH's MoE expert layers. The expert weights are 3D `nn.Parameter` tensors (not `nn.Linear`), which the Triton kernel does not support. Keep `lora_mlp_kernel: false`.
 - **Gradient checkpointing**: Only supported when `sample_packing: true`. Without sample packing the upstream model marks `supports_gradient_checkpointing = False`.
+
+## Training notes
+
+- Do **not** set `trust_remote_code: true`. transformers 5.14+ already registers native `nemotron_h`. The Hub `auto_map` modeling file hard-imports `mamba_ssm` and fails if that package is missing.
+- Install local `mamba-ssm` and `causal-conv1d`. Axolotl binds those packages first (and wraps Hub `lazy_load_kernel`) so packing and `Mixer.__init__` do not need `USE_HUB_KERNELS=0`.
+- QLoRA automatically leaves `out_proj` and `lm_head` in bf16. The fused Mamba2 kernel and Cut Cross Entropy both read those weights as raw tensors; 4-bit packed storage breaks the shapes.
+- transformers 5.14+ names mixers `linear_attention` / `full_attention` / `moe` / `mlp`. The packing patch accepts those names and the older `mamba` / `attention` aliases.
+- FSDP2 `offload_params` keeps `NemotronHTopkRouter.e_score_correction_bias` on CPU. Axolotl copies it onto the compute device in the router forward; do not assign the moved tensor back onto the module.
+- If the image has `flash-attn-4` but not classic `flash-attn`, set `attn_implementation: flash_attention_4`. Requesting `flash_attention_2` remaps to a Hub kernel name that is unregistered when Hub kernels are disabled.

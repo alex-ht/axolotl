@@ -4,9 +4,16 @@ Used by: nemotron_h, falcon_h1, granite_moe_hybrid
 """
 
 import functools
+import importlib
+from types import ModuleType
 
 import torch
 import torch.distributed as dist
+
+_LOCAL_HUB_KERNEL_MODULES = {
+    "causal-conv1d": "causal_conv1d",
+    "mamba-ssm": "mamba_ssm",
+}
 
 
 def get_seq_idx(position_ids: torch.Tensor) -> torch.Tensor:
@@ -187,6 +194,98 @@ def mamba2_cp_correction(
     return corrected_out, corrected_h_final
 
 
+def _mamba_fast_path_available(target_module) -> bool:
+    return all(
+        getattr(target_module, name, None)
+        for name in (
+            "selective_state_update",
+            "mamba_chunk_scan_combined",
+            "mamba_split_conv1d_scan_combined",
+            "causal_conv1d_fn",
+            "causal_conv1d_update",
+        )
+    )
+
+
+def patch_hub_kernels_prefer_local() -> None:
+    """Prefer pip-installed kernels over Hub snapshot_download.
+
+    transformers ``lazy_load_kernel`` may fetch a prebuilt variant that does
+    not exist for this torch/CUDA and crash before the local-import fallback.
+    Mixer.__init__ calls that helper after our packing patch, so the wrap
+    must also be rebound onto already-imported modeling modules.
+    """
+    try:
+        from transformers.integrations import hub_kernels
+    except ImportError:
+        return
+
+    orig = hub_kernels.lazy_load_kernel
+    if getattr(orig, "_axolotl_prefer_local", False):
+        return
+
+    def wrapped(kernel_name, mapping=None):
+        if mapping is None:
+            mapping = hub_kernels._KERNEL_MODULE_MAPPING
+        cached = mapping.get(kernel_name)
+        if isinstance(cached, ModuleType):
+            return cached
+        local_name = _LOCAL_HUB_KERNEL_MODULES.get(kernel_name)
+        if local_name is not None:
+            try:
+                module = importlib.import_module(local_name)
+            except ImportError:
+                module = None
+            if module is not None:
+                mapping[kernel_name] = module
+                return module
+        return orig(kernel_name, mapping)
+
+    wrapped._axolotl_prefer_local = True  # type: ignore[attr-defined]
+    hub_kernels.lazy_load_kernel = wrapped
+
+
+def _rebind_module_lazy_load_kernel(target_module) -> None:
+    try:
+        from transformers.integrations import hub_kernels
+    except ImportError:
+        return
+    if getattr(target_module, "lazy_load_kernel", None) is not None:
+        target_module.lazy_load_kernel = hub_kernels.lazy_load_kernel
+
+
+def _try_bind_local_mamba_kernels(target_module) -> None:
+    """Bind pip-installed mamba-ssm / causal-conv1d onto *target_module*."""
+    if getattr(target_module, "causal_conv1d_fn", None) is None:
+        try:
+            import causal_conv1d
+        except ImportError:
+            pass
+        else:
+            target_module.causal_conv1d_update = getattr(
+                causal_conv1d, "causal_conv1d_update", None
+            )
+            target_module.causal_conv1d_fn = getattr(
+                causal_conv1d, "causal_conv1d_fn", None
+            )
+
+    if getattr(target_module, "mamba_chunk_scan_combined", None) is not None:
+        return
+
+    try:
+        from mamba_ssm.ops.triton.selective_state_update import selective_state_update
+        from mamba_ssm.ops.triton.ssd_combined import (
+            mamba_chunk_scan_combined,
+            mamba_split_conv1d_scan_combined,
+        )
+    except ImportError:
+        return
+
+    target_module.selective_state_update = selective_state_update
+    target_module.mamba_chunk_scan_combined = mamba_chunk_scan_combined
+    target_module.mamba_split_conv1d_scan_combined = mamba_split_conv1d_scan_combined
+
+
 def ensure_mamba_kernels_loaded(target_module):
     """Eagerly resolve mamba-ssm and causal-conv1d globals on *target_module*.
 
@@ -195,49 +294,56 @@ def ensure_mamba_kernels_loaded(target_module):
     so the module globals are still ``None``.  This helper triggers the kernel
     resolution early so the patched ``cuda_kernels_forward`` (and
     ``wrap_mamba_scan_for_cp``) can reference them.
+
+    Prefer already-installed packages. ``lazy_load_kernel`` may
+    ``snapshot_download`` a Hub variant that does not exist for this
+    torch/CUDA and crash before the local-import fallback.
     """
+    patch_hub_kernels_prefer_local()
+    _rebind_module_lazy_load_kernel(target_module)
+
     if getattr(target_module, "mamba_chunk_scan_combined", None) is not None:
+        return
+
+    _try_bind_local_mamba_kernels(target_module)
+    if _mamba_fast_path_available(target_module):
+        target_module.is_fast_path_available = True
         return
 
     try:
         from transformers.integrations.hub_kernels import lazy_load_kernel
         from transformers.utils.import_utils import resolve_internal_import
     except ImportError:
+        target_module.is_fast_path_available = _mamba_fast_path_available(target_module)
         return
 
-    causal_conv1d = lazy_load_kernel("causal-conv1d")
-    if causal_conv1d is not None:
-        target_module.causal_conv1d_update = getattr(
-            causal_conv1d, "causal_conv1d_update", None
-        )
-        target_module.causal_conv1d_fn = getattr(
-            causal_conv1d, "causal_conv1d_fn", None
-        )
+    if getattr(target_module, "causal_conv1d_fn", None) is None:
+        causal_conv1d = lazy_load_kernel("causal-conv1d")
+        if causal_conv1d is not None:
+            target_module.causal_conv1d_update = getattr(
+                causal_conv1d, "causal_conv1d_update", None
+            )
+            target_module.causal_conv1d_fn = getattr(
+                causal_conv1d, "causal_conv1d_fn", None
+            )
 
-    mamba_ssm = lazy_load_kernel("mamba-ssm")
-    if mamba_ssm is not None:
-        target_module.selective_state_update = resolve_internal_import(
-            mamba_ssm,
-            chained_path="ops.triton.selective_state_update.selective_state_update",
-        )
-        target_module.mamba_chunk_scan_combined = resolve_internal_import(
-            mamba_ssm,
-            chained_path="ops.triton.ssd_combined.mamba_chunk_scan_combined",
-        )
-        target_module.mamba_split_conv1d_scan_combined = resolve_internal_import(
-            mamba_ssm,
-            chained_path="ops.triton.ssd_combined.mamba_split_conv1d_scan_combined",
-        )
+    if getattr(target_module, "mamba_chunk_scan_combined", None) is None:
+        mamba_ssm = lazy_load_kernel("mamba-ssm")
+        if mamba_ssm is not None:
+            target_module.selective_state_update = resolve_internal_import(
+                mamba_ssm,
+                chained_path="ops.triton.selective_state_update.selective_state_update",
+            )
+            target_module.mamba_chunk_scan_combined = resolve_internal_import(
+                mamba_ssm,
+                chained_path="ops.triton.ssd_combined.mamba_chunk_scan_combined",
+            )
+            target_module.mamba_split_conv1d_scan_combined = resolve_internal_import(
+                mamba_ssm,
+                chained_path="ops.triton.ssd_combined.mamba_split_conv1d_scan_combined",
+            )
 
-    target_module.is_fast_path_available = all(
-        (
-            getattr(target_module, "selective_state_update", None),
-            getattr(target_module, "mamba_chunk_scan_combined", None),
-            getattr(target_module, "mamba_split_conv1d_scan_combined", None),
-            getattr(target_module, "causal_conv1d_fn", None),
-            getattr(target_module, "causal_conv1d_update", None),
-        )
-    )
+    target_module.is_fast_path_available = _mamba_fast_path_available(target_module)
 
 
 def wrap_mamba_scan_for_cp(target_module):
