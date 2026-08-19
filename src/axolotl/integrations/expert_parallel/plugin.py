@@ -312,14 +312,17 @@ class ExpertParallelPlugin(BasePlugin):
             if mesh is None or "ep" not in (mesh.mesh_dim_names or ()):
                 from torch.distributed.device_mesh import init_device_mesh
 
-                # Fallback mesh from the >1 axes (ep outermost). Orthogonality of the ep/cp/dp
-                # groups is what matters; accelerate's mesh is preferred when present so the ep
-                # group matches the one used for the experts' FSDP exclusion.
-                axes = [("ep", ep_size)]
-                if cp_size > 1:
-                    axes.append(("cp", cp_size))
+                # Fallback mesh from the >1 axes. `ep` is innermost so the EP group is
+                # contiguous within a node (intranode DeepEP IPC can't cross nodes);
+                # `dp_shard`/`cp` are outer. Orthogonality of the ep/cp/dp groups is what
+                # matters; accelerate's mesh is preferred when present so the ep group
+                # matches the one used for the experts' FSDP exclusion.
+                axes = []
                 if dp_shard_size > 1:
                     axes.append(("dp_shard", dp_shard_size))
+                if cp_size > 1:
+                    axes.append(("cp", cp_size))
+                axes.append(("ep", ep_size))
                 mesh = init_device_mesh(
                     "cuda" if torch.cuda.is_available() else "cpu",
                     tuple(s for _, s in axes),

@@ -44,14 +44,15 @@ def _patched_ep_enabled(self):
 
 def _patched_dp_dim_names(self):
     """DP axes (different ranks see different data). EP is included — each
-    EP rank pulls its own batch."""
+    EP rank pulls its own batch. ``ep`` is innermost so the EP group is
+    contiguous within a node (intranode DeepEP IPC can't cross nodes)."""
     dims = []
-    if self.ep_enabled:
-        dims += ["ep"]
     if self.dp_replicate_enabled:
         dims += ["dp_replicate"]
     if self.dp_shard_enabled:
         dims += ["dp_shard"]
+    if self.ep_enabled:
+        dims += ["ep"]
     return dims
 
 
@@ -59,12 +60,13 @@ def _patched_dp_shard_cp_dim_names(self):
     """Axes the outer FSDP wrap shards along (flattened into `dp_shard_cp`).
     Including `ep` makes non-expert grads reduce-scatter across the full
     world; experts are pre-wrapped on `mesh["dp_shard"]` only and skipped
-    by the auto-wrap walker."""
+    by the auto-wrap walker. ``ep`` sits after ``dp_shard`` so the EP group
+    stays contiguous within a node."""
     dims = []
-    if self.ep_enabled:
-        dims += ["ep"]
     if self.dp_shard_enabled:
         dims += ["dp_shard"]
+    if self.ep_enabled:
+        dims += ["ep"]
     if self.cp_enabled:
         dims += ["cp"]
     return dims
@@ -84,10 +86,14 @@ def _patched_non_dp_dim_names(self):
 
 def _patched_get_mesh(self):
     """Build (dim_names, shape) for `init_device_mesh`. Order keeps the dp
-    block (ep, dp_replicate, dp_shard) contiguous so `_flatten("dp")` works.
+    block (dp_replicate, dp_shard, ep) contiguous so `_flatten("dp")` works,
+    and puts `ep` innermost so the EP group is contiguous within a node —
+    DeepEP's intranode IPC (`cudaIpcOpenMemHandle`) cannot cross nodes, so a
+    strided EP group (ep outermost) fails on multi-node with
+    `cudaErrorInvalidResourceHandle`.
     """
     mesh_dims = {p: self._sizes[p] for p in self.active_mesh_dims}
-    mesh_order = ["ep", "dp_replicate", "dp_shard", "cp", "sp", "tp"]
+    mesh_order = ["dp_replicate", "dp_shard", "ep", "cp", "sp", "tp"]
     sorted_items = sorted(mesh_dims.items(), key=lambda x: mesh_order.index(x[0]))
     return tuple(zip(*sorted_items, strict=True))
 
