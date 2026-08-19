@@ -57,6 +57,12 @@ lora_target_parameters:
   - down_proj
 ```
 
+## Expert Parallel (DeepEP)
+
+Nemotron-3 Super LatentMoE experts are non-gated 3D `up_proj` / `down_proj` on `moe_latent_size` (1024). DeepEP dispatch/combine uses that latent width, **not** `moe_intermediate_size` (2688). The example uses `grouped_mm`; upstream ScatterMoE also handles the non-gated layout (see `src/axolotl/integrations/kernels/README.md`). `expert_parallel_size` must be ≥ 4 so each rank holds ≤ 128 of the 512 experts.
+
+See `examples/nemotron-h/120b-a12b-ep-fft.yaml`.
+
 ## Limitations
 
 - **Routed experts**: `lora_mlp_kernel` only patches dense/shared modules. Routed 3D expert tensors retain their existing PEFT or configured MoE backend; enabling dense MLP kernels does not optimize these routed expert tensors.
