@@ -209,6 +209,17 @@ Hybrid Mamba2 / Attention / LatentMoE (`model_type: nemotron_h`). See `examples/
 - Router `e_score_correction_bias` is copied to the compute device (FSDP2 `offload_params`)
 - Local `mamba-ssm` / `causal-conv1d` are preferred over Hub kernel download (no `USE_HUB_KERNELS=0` required when those packages import)
 
+### LatentMoE + Expert Parallel (DeepEP)
+
+Super's routed experts are **non-gated** (`up_proj` / `down_proj`, `relu2`) and operate on `moe_latent_size` (1024), not `hidden_size` (4096) and not `moe_intermediate_size` (2688). `NemotronHMoE` projects 4096→1024, runs experts, then 1024→4096; DeepEP wraps `experts.forward`, so the all-to-all payload is **1024** with **512** experts and **topk=22**. 2688 is the local `up_proj` intermediate only.
+
+- Plugin: `axolotl.integrations.expert_parallel.ExpertParallelPlugin`
+- `experts_implementation: grouped_mm` — do not set `use_scattermoe` / `use_sonicmoe`
+- `expert_parallel_size` must divide 512 and keep `E_local ≤ 128` → **ep_size ≥ 4** (4, 8, …). `ep=2` is invalid (`E_local=256`)
+- Shared expert + `fc1_latent_proj` / `fc2_latent_proj` stay replicated / FSDP-sharded
+
+See `examples/nemotron-h/120b-a12b-ep-fft.yaml`.
+
 ### Attention
 
 `NemotronHAttention` looks up `config._attn_implementation` directly. If the environment has flash-attn-4 but not classic flash-attn, use `attn_implementation: flash_attention_4`.

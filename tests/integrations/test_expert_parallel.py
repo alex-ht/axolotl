@@ -18,12 +18,16 @@ from axolotl.integrations.expert_parallel import (
 )
 from axolotl.integrations.expert_parallel.experts_fn import (
     REGISTRY,
+    _eager_local,
+    _maybe_install_decorator_attrs,
+    _require_gated_local_kernel,
     kernel_to_registered_name,
     register_all,
 )
 from axolotl.integrations.expert_parallel.plugin import expert_shard_axis
 from axolotl.integrations.expert_parallel.shard import (
     _detect_experts_modules,
+    _expert_up_name,
     _slice_expert_lora_param,
     ep_adapter_load_local_shard,
     shard_expert_weights,
@@ -41,6 +45,27 @@ def _build_qwen3moe_block(num_experts: int = 16, top_k: int = 4):
         num_experts_per_tok=top_k,
     )
     return Qwen3MoeSparseMoeBlock(cfg)
+
+
+class _NonGatedExperts(torch.nn.Module):
+    """NemotronH-style non-gated experts: up_proj [E, I, H], down_proj [E, H, I].
+
+    I is even and != 2H so a mistaken SwiGLU chunk(2) would not match the
+    reference ``down(act(up(x)))``.
+    """
+
+    def __init__(self, num_experts=8, hidden=32, intermediate=48):
+        super().__init__()
+        self.has_gate = False
+        self.num_experts = num_experts
+        self.up_proj = torch.nn.Parameter(
+            torch.randn(num_experts, intermediate, hidden)
+        )
+        self.down_proj = torch.nn.Parameter(
+            torch.randn(num_experts, hidden, intermediate)
+        )
+        self.act_fn = torch.nn.functional.relu
+        self.config = type("_C", (), {"num_experts_per_tok": 2})()
 
 
 # --------------------------------------------------------------------------- #
@@ -183,6 +208,31 @@ class TestExpertModuleDetection:
         found = list(_detect_experts_modules(m))
         assert len(found) == 0
 
+    def test_up_name_gated_vs_nongated(self):
+        assert _expert_up_name(_build_qwen3moe_block().experts) == "gate_up_proj"
+        assert _expert_up_name(_NonGatedExperts()) == "up_proj"
+
+    def test_detects_nongated_experts(self):
+        root = torch.nn.Module()
+        root.experts = _NonGatedExperts()
+        found = list(_detect_experts_modules(root))
+        assert len(found) == 1
+        assert found[0][1] is root.experts
+
+    def test_skips_linear_up_proj(self):
+        m = torch.nn.Module()
+        m.has_gate = False
+        m.up_proj = torch.nn.Linear(8, 16)
+        m.down_proj = torch.nn.Linear(16, 8)
+        assert list(_detect_experts_modules(m)) == []
+
+    def test_skips_up_proj_when_has_gate_defaults_true(self):
+        m = torch.nn.Module()
+        m.up_proj = torch.nn.Parameter(torch.randn(4, 8, 4))
+        m.down_proj = torch.nn.Parameter(torch.randn(4, 4, 8))
+        assert _expert_up_name(m) is None
+        assert list(_detect_experts_modules(m)) == []
+
 
 # --------------------------------------------------------------------------- #
 # Sharding (single-rank == no-op)
@@ -288,6 +338,66 @@ class TestPluginLifecycle:
         cfg = self._ep_cfg(expert_parallel_fallback_on_unsupported=False)
         with pytest.raises(ImportError):
             ExpertParallelPlugin().pre_model_load(cfg)
+
+    def test_reject_scattermoe_on_nongated_experts(self):
+        root = torch.nn.Module()
+        root.experts = _NonGatedExperts()
+        cfg = self._ep_cfg(use_scattermoe=True)
+        with pytest.raises(ValueError, match="non-gated"):
+            ExpertParallelPlugin._reject_ungated_fast_kernels(root, cfg)
+
+    def test_grouped_mm_allowed_on_nongated_experts(self):
+        root = torch.nn.Module()
+        root.experts = _NonGatedExperts()
+        cfg = self._ep_cfg(experts_implementation="grouped_mm")
+        ExpertParallelPlugin._reject_ungated_fast_kernels(root, cfg)
+
+    def test_log_nongated_dims_uses_up_proj_in_dim(self, caplog):
+        import logging
+
+        root = torch.nn.Module()
+        root.experts = _NonGatedExperts(num_experts=8, hidden=32, intermediate=48)
+        with caplog.at_level(
+            logging.INFO, logger="axolotl.integrations.expert_parallel.plugin"
+        ):
+            ExpertParallelPlugin._log_nongated_expert_dims(root)
+        joined = " ".join(r.message for r in caplog.records)
+        assert "hidden=32" in joined
+        assert "experts=8" in joined
+        assert "intermediate=48" in joined
+        assert "hidden=48" not in joined
+
+
+class TestEagerNongated:
+    def test_eager_local_matches_down_act_up(self):
+        experts = _NonGatedExperts(num_experts=4, hidden=16, intermediate=24)
+        ntok, topk = 6, 2
+        x = torch.randn(ntok, 16)
+        idx = torch.tensor(
+            [[0, 1], [1, 2], [2, 3], [0, 3], [1, 3], [0, 2]], dtype=torch.long
+        )
+        w = torch.rand(ntok, topk)
+        w = w / w.sum(dim=-1, keepdim=True)
+        out = _eager_local(experts, x, idx, w)
+
+        ref = torch.zeros_like(x)
+        for e in range(experts.num_experts):
+            rows, ks = (idx == e).nonzero(as_tuple=True)
+            if rows.numel() == 0:
+                continue
+            h = experts.act_fn(torch.nn.functional.linear(x[rows], experts.up_proj[e]))
+            y = torch.nn.functional.linear(h, experts.down_proj[e])
+            ref.index_add_(0, rows, y * w[rows, ks].unsqueeze(-1))
+        torch.testing.assert_close(out, ref)
+
+    def test_scattermoe_kernel_rejects_nongated(self):
+        with pytest.raises(ValueError, match="grouped_mm"):
+            _require_gated_local_kernel(_NonGatedExperts(), "scattermoe")
+
+    def test_maybe_install_preserves_has_gate_false(self):
+        experts = _NonGatedExperts()
+        _maybe_install_decorator_attrs(experts)
+        assert experts.has_gate is False
 
 
 # --------------------------------------------------------------------------- #

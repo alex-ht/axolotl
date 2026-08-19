@@ -88,6 +88,9 @@ class ExpertParallelPlugin(BasePlugin):
                 "for sharding (model uses a non-canonical layout, or single-rank). "
                 "DeepEP dispatch/combine will run as a no-op."
             )
+        else:
+            self._reject_ungated_fast_kernels(model, cfg)
+            self._log_nongated_expert_dims(model)
 
         configure_buffer(
             ep_group=ep_group,
@@ -441,6 +444,47 @@ class ExpertParallelPlugin(BasePlugin):
             f"(scale = 1/{ep_size})"
         )
         return n_hooks
+
+    @staticmethod
+    def _reject_ungated_fast_kernels(model, cfg) -> None:
+        """ScatterMoE / SonicMoE only handle gated SwiGLU experts."""
+        local = ExpertParallelPlugin._infer_local_kernel(cfg)
+        if local not in ("scattermoe", "sonicmoe"):
+            return
+        from .shard import _detect_experts_modules
+
+        for _name, module in _detect_experts_modules(model):
+            if getattr(module, "has_gate", True):
+                continue
+            raise ValueError(
+                f"expert_parallel: {local} requires gated experts (has_gate=True); "
+                f"{type(module).__name__} is non-gated (e.g. Nemotron-H LatentMoE). "
+                "Use experts_implementation: grouped_mm and unset use_scattermoe / "
+                "use_sonicmoe."
+            )
+
+    @staticmethod
+    def _log_nongated_expert_dims(model) -> None:
+        """Log DeepEP communication dims for non-gated / LatentMoE experts."""
+        from .shard import _detect_experts_modules, _expert_up_name
+
+        for _name, module in _detect_experts_modules(model):
+            if getattr(module, "has_gate", True):
+                continue
+            up_name = _expert_up_name(module)
+            up = getattr(module, up_name) if up_name else None
+            if up is None or up.dim() != 3:
+                continue
+            e_global = getattr(module, "num_experts_global", up.shape[0])
+            intermediate, hidden = up.shape[1], up.shape[2]
+            topk = getattr(getattr(module, "config", None), "num_experts_per_tok", None)
+            topk_s = f", topk={topk}" if topk is not None else ""
+            LOG.info(
+                f"expert_parallel: non-gated {type(module).__name__}: DeepEP comm "
+                f"hidden={hidden} (moe latent), experts={e_global}{topk_s}; "
+                f"intermediate={intermediate} is local GEMM only (not dispatched)."
+            )
+            return
 
     @staticmethod
     def _is_ep_enabled(cfg) -> bool:

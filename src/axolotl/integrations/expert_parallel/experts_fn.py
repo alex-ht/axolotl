@@ -89,14 +89,19 @@ def _eager_local(experts, recv_x, recv_topk_idx, recv_topk_weights):
     """Eager Python loop over local experts. Reference for numerics."""
     out = torch.zeros_like(recv_x)
     num_local = getattr(experts, "num_local_experts", experts.num_experts)
+    has_gate = getattr(experts, "has_gate", True)
     for e in range(num_local):
         rows, ks = (recv_topk_idx == e).nonzero(as_tuple=True)
         if rows.numel() == 0:
             continue
         x_e = recv_x[rows]
-        gate_up = F.linear(x_e, experts.gate_up_proj[e])
-        gate, up = gate_up.chunk(2, dim=-1)
-        h = experts.act_fn(gate) * up
+        if has_gate:
+            gate_up = F.linear(x_e, experts.gate_up_proj[e])
+            gate, up = gate_up.chunk(2, dim=-1)
+            h = experts.act_fn(gate) * up
+        else:
+            # Non-gated LatentMoE (NemotronH): up_proj is [I, H_latent], not 2I gated.
+            h = experts.act_fn(F.linear(x_e, experts.up_proj[e]))
         y = F.linear(h, experts.down_proj[e])
         weighted = (y * recv_topk_weights[rows, ks].unsqueeze(-1)).to(out.dtype)
         out.index_add_(0, rows, weighted)
@@ -110,7 +115,9 @@ def _maybe_install_decorator_attrs(experts):
     if not hasattr(experts, "has_gate"):
         experts.has_gate = True
     if not hasattr(experts, "has_bias"):
-        experts.has_bias = hasattr(experts, "gate_up_proj_bias")
+        experts.has_bias = hasattr(experts, "gate_up_proj_bias") or hasattr(
+            experts, "up_proj_bias"
+        )
     if not hasattr(experts, "is_transposed"):
         experts.is_transposed = False
 
@@ -133,9 +140,20 @@ def _grouped_mm_local(experts, recv_x, recv_topk_idx, recv_topk_weights):
     return grouped_mm_experts_forward(experts, recv_x, safe_idx, safe_w)
 
 
+def _require_gated_local_kernel(experts, kernel_name: str) -> None:
+    if getattr(experts, "has_gate", True):
+        return
+    raise ValueError(
+        f"{kernel_name} requires gated experts (has_gate=True); this module is "
+        "non-gated (e.g. Nemotron-H LatentMoE). Use experts_implementation: "
+        "grouped_mm (or eager) under DeepEP, and unset use_scattermoe / use_sonicmoe."
+    )
+
+
 def _scattermoe_local(experts, recv_x, recv_topk_idx, recv_topk_weights):
     # scattermoe skips sentinel rows natively (only valid rows hit the grouped GEMM
     # + per-row LoRA) -- pass the raw -1-tagged routing, not the masked version.
+    _require_gated_local_kernel(experts, "scattermoe")
     from axolotl.integrations.kernels.libs.scattermoe_lora.experts import (
         scattermoe_experts_forward_ep,
     )
@@ -146,6 +164,7 @@ def _scattermoe_local(experts, recv_x, recv_topk_idx, recv_topk_weights):
 
 
 def _sonicmoe_local(experts, recv_x, recv_topk_idx, recv_topk_weights):
+    _require_gated_local_kernel(experts, "sonicmoe")
     from axolotl.integrations.kernels.libs.sonicmoe.experts import (
         sonicmoe_experts_forward_with_lora,
     )

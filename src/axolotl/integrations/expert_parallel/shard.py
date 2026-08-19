@@ -128,29 +128,45 @@ def _scatter_expert_from_rank0(module, attr_name, e_local, dp_size):
     setattr(module, attr_name, new_param)
 
 
+def _is_3d_param(obj) -> bool:
+    return isinstance(obj, torch.nn.Parameter) and obj.dim() == 3
+
+
+def _expert_up_name(module) -> str | None:
+    """3D up-projection param name for a routed Experts module, or ``None``.
+
+    Gated experts (Qwen/GLM/DeepSeek) store concatenated gate+up as ``gate_up_proj``.
+    Non-gated LatentMoE (NemotronH) stores ``up_proj`` with ``has_gate=False``.
+    Shared-expert / dense MLPs use ``nn.Linear`` and must not match. Mixtral's
+    ``ModuleList`` layout is out of scope for v1.
+    """
+    if not _is_3d_param(getattr(module, "down_proj", None)):
+        return None
+    if _is_3d_param(getattr(module, "gate_up_proj", None)):
+        return "gate_up_proj"
+    if getattr(module, "has_gate", True):
+        return None
+    if _is_3d_param(getattr(module, "up_proj", None)):
+        return "up_proj"
+    return None
+
+
+def _expert_up_bias_name(up_name: str) -> str:
+    return "gate_up_proj_bias" if up_name == "gate_up_proj" else "up_proj_bias"
+
+
 def _detect_experts_modules(model):
     """Yield (name, module) pairs for every module that looks like an Experts class.
 
-    Detection: 3D `gate_up_proj` and `down_proj` parameters with experts on dim 0.
-    This is the canonical layout enforced by `@use_experts_implementation`.
-    Mixtral's `ModuleList[MixtralBlockSparseTop2MLP]` does NOT match — out of scope
-    for v1.
+    Detection: 3D ``gate_up_proj`` or non-gated ``up_proj``, plus 3D ``down_proj``,
+    experts on dim 0. A PEFT ParamWrapper delegates those attrs to its
+    ``base_layer``, so it would match too and double-count the experts (double
+    grad-scale, redundant fully_shard). Yield only the real experts module.
     """
     for name, module in model.named_modules():
-        # A PEFT ParamWrapper delegates `gate_up_proj` to its `base_layer`, so it
-        # would match too and double-count the experts (double grad-scale, redundant
-        # fully_shard). Yield only the real experts module (the wrapped base_layer).
         if _is_param_wrapper(module):
             continue
-        gp = getattr(module, "gate_up_proj", None)
-        dp = getattr(module, "down_proj", None)
-        if gp is None or dp is None:
-            continue
-        if not (
-            isinstance(gp, torch.nn.Parameter) and isinstance(dp, torch.nn.Parameter)
-        ):
-            continue
-        if gp.dim() != 3 or dp.dim() != 3:
+        if _expert_up_name(module) is None:
             continue
         yield name, module
 
@@ -187,7 +203,10 @@ def shard_expert_weights(model, ep_group) -> int:
     ignore_names: list[str] = []
 
     for name, module in _detect_experts_modules(model):
-        gp = module.gate_up_proj
+        up_name = _expert_up_name(module)
+        if up_name is None:
+            continue
+        gp = getattr(module, up_name)
         E = gp.shape[0]
         if E % ep_size != 0:
             raise ValueError(
@@ -203,10 +222,11 @@ def shard_expert_weights(model, ep_group) -> int:
         # dp_size>1 (EP×dp_shard / EP×cp) gives the dp ranks within an ep-group the same ep slice; the
         # FSDP dp-axis shards it across them afterwards. See _scatter_expert_from_rank0.
         dp_size = dist.get_world_size() // ep_size
+        bias_names = (_expert_up_bias_name(up_name), "down_proj_bias")
         with torch.no_grad():
-            _scatter_expert_from_rank0(module, "gate_up_proj", E_local, dp_size)
+            _scatter_expert_from_rank0(module, up_name, E_local, dp_size)
             _scatter_expert_from_rank0(module, "down_proj", E_local, dp_size)
-            for bias_name in ("gate_up_proj_bias", "down_proj_bias"):
+            for bias_name in bias_names:
                 bias = getattr(module, bias_name, None)
                 if (
                     isinstance(bias, torch.nn.Parameter)
@@ -227,9 +247,9 @@ def shard_expert_weights(model, ep_group) -> int:
 
         # Mark sharded params as DDP-ignored — they hold rank-specific content
         # and must NOT be broadcast from rank 0 at DDP construction.
-        ignore_names.append(f"{name}.gate_up_proj")
+        ignore_names.append(f"{name}.{up_name}")
         ignore_names.append(f"{name}.down_proj")
-        for bias_name in ("gate_up_proj_bias", "down_proj_bias"):
+        for bias_name in bias_names:
             if isinstance(getattr(module, bias_name, None), torch.nn.Parameter):
                 ignore_names.append(f"{name}.{bias_name}")
 
@@ -421,7 +441,7 @@ def save_ep_lora_adapter(model, output_dir: str, ep_group) -> bool:
             and m.num_local_experts < m.num_experts_global
         ):
             e_global = m.num_experts_global
-            for pn in ("gate_up_proj", "down_proj"):
+            for pn in ("gate_up_proj", "up_proj", "down_proj"):
                 if hasattr(m, pn):
                     expert_param_names.add(pn)
     if e_global is None or not expert_param_names:
