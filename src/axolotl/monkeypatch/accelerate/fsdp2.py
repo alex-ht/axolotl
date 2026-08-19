@@ -270,7 +270,9 @@ def fsdp2_load_full_state_dict(
             else:
                 g = torch.empty(gshape, device=dev, dtype=sharded_meta_param.dtype)
             dist.broadcast(g, src=0)
-            ep_coord = min(dist.get_process_group_ranks(mesh.get_group())) // dp_size
+            # `ep` is the innermost mesh axis, so the dp_shard subgroup's smallest rank is this
+            # rank's ep coordinate (rank = dp_rank * ep_size + ep_rank).
+            ep_coord = min(dist.get_process_group_ranks(mesh.get_group())) % ep_size
             dp_rank = dist.get_group_rank(mesh.get_group(), dist.get_rank())
             local = ep_adapter_load_local_shard(
                 g,
