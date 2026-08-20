@@ -335,6 +335,7 @@ class KernelsPlugin(BasePlugin):
                 configure_lora_split,
             )
 
+            # Prefers a pip-installed sonicmoe package over the Hub prebuilt.
             register_sonicmoe_experts()
             configure_ep_row_padding(
                 cfg.sonicmoe_ep_row_padding or "pow2",

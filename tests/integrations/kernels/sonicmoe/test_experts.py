@@ -115,6 +115,54 @@ class TestSonicMoERegistration:
         assert ALL_EXPERTS_FUNCTIONS["sonicmoe"] is sonicmoe_experts_forward_with_lora
         assert ALL_EXPERTS_FUNCTIONS["sonicmoe"] is not sonicmoe_experts_forward
 
+    def test_register_prefers_local_sonicmoe_over_hub(self):
+        pytest.importorskip("transformers.integrations.hub_kernels")
+        import types
+        from unittest.mock import patch
+
+        from transformers.integrations import hub_kernels
+
+        from axolotl.integrations.kernels.libs.sonicmoe.experts import (
+            register_sonicmoe_experts,
+        )
+
+        fake_local = types.ModuleType("sonicmoe")
+        orig = hub_kernels._KERNEL_MODULE_MAPPING.get("sonic-moe")
+        try:
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            with patch.dict("sys.modules", {"sonicmoe": fake_local}):
+                register_sonicmoe_experts()
+            assert hub_kernels._KERNEL_MODULE_MAPPING["sonic-moe"] is fake_local
+        finally:
+            if orig is None:
+                hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            else:
+                hub_kernels._KERNEL_MODULE_MAPPING["sonic-moe"] = orig
+
+    def test_register_falls_back_to_hub_when_local_missing(self):
+        pytest.importorskip("transformers.integrations.hub_kernels")
+        from unittest.mock import patch
+
+        from transformers.integrations import hub_kernels
+
+        from axolotl.integrations.kernels.libs.sonicmoe.experts import (
+            register_sonicmoe_experts,
+        )
+
+        orig = hub_kernels._KERNEL_MODULE_MAPPING.get("sonic-moe")
+        try:
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            with patch.dict("sys.modules", {"sonicmoe": None}):
+                # ``sonicmoe: None`` makes ``import sonicmoe`` raise ImportError.
+                register_sonicmoe_experts()
+            # No local package: leave the Hub (kernels-community) path untouched.
+            assert "sonic-moe" not in hub_kernels._KERNEL_MODULE_MAPPING
+        finally:
+            if orig is None:
+                hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            else:
+                hub_kernels._KERNEL_MODULE_MAPPING["sonic-moe"] = orig
+
 
 class TestMoELoRAMaterialize:
     """Verify the LoRA materialization autograd Function used by the registered forward."""
