@@ -273,13 +273,48 @@ def redirect_sonicmoe_kernel_repo() -> None:
         hub_kernels.ALLOW_ALL_KERNELS = True
 
 
+def _prefer_local_sonicmoe_kernel() -> bool:
+    """Use a pip-installed ``sonicmoe`` package instead of Hub ``get_kernel``.
+
+    transformers ``lazy_load_kernel("sonic-moe")`` downloads from the Hub whenever the
+    ``kernels`` package is present. Its local-import fallback also looks up ``sonic_moe``
+    (underscore), which is not the pip import name. Seed the module cache and wrap the
+    loader so a local install wins. Returns True iff the local package was bound.
+    """
+    from axolotl.monkeypatch.models.mamba_utils import (
+        _rebind_module_lazy_load_kernel,
+        patch_hub_kernels_prefer_local,
+    )
+
+    patch_hub_kernels_prefer_local()
+    try:
+        from transformers.integrations import sonicmoe as sonicmoe_tf
+    except ImportError:
+        pass
+    else:
+        _rebind_module_lazy_load_kernel(sonicmoe_tf)
+
+    try:
+        import sonicmoe
+    except ImportError:
+        return False
+    try:
+        from transformers.integrations import hub_kernels
+    except ImportError:
+        return True
+
+    hub_kernels._KERNEL_MODULE_MAPPING["sonic-moe"] = sonicmoe
+    return True
+
+
 def register_sonicmoe_experts() -> None:
     """Register the LoRA-aware ``"sonicmoe"`` forward, overriding upstream. Idempotent."""
     from transformers.integrations.moe import ALL_EXPERTS_FUNCTIONS
 
-    # Any caller (plugin, e2e tests) must load our sonic-moe build, not the stale upstream prebuilt;
-    # the kernel loads lazily on first forward, so redirect before that, at registration time.
-    redirect_sonicmoe_kernel_repo()
+    # Local pip ``sonicmoe`` first; otherwise point the Hub mapping at our prebuilt (quack 0.6.1).
+    # The kernel loads lazily on first forward, so this must run at registration time.
+    if not _prefer_local_sonicmoe_kernel():
+        redirect_sonicmoe_kernel_repo()
     ALL_EXPERTS_FUNCTIONS.register("sonicmoe", sonicmoe_experts_forward_with_lora)
 
     # Route PEFT target_parameters expert LoRA past the parametrization merge (which cannot

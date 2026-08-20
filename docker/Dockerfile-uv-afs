@@ -161,6 +161,34 @@ MAX_JOBS="${DEEPEP_MAX_JOBS}" \
 cd / && rm -rf /tmp/DeepEP
 SHELL
 
+# sonic-moe is CuTe-DSL (JIT on first GPU use); no CUDA ext at image build.
+# Clone GitHub: PyPI 0.1.2.post1 still pins torch<=2.9.1 and cutlass-dsl==4.4.2.
+# Pin the last commit before quack-kernels>=0.6.4 / gemm_act (that would pull
+# nvidia-cutlass-dsl==4.6.2 and collide with vLLM/FA4's ==4.6.0).
+# --no-deps on sonic-moe; quack 0.6.1 keeps cutlass-dsl==4.6.0.
+ARG SONICMOE_REF="9ffee8b6237a287370c8817ebed86f29e37f68ad"
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    SONICMOE_REF=${SONICMOE_REF} TARGETARCH=${TARGETARCH} \
+    <<'SHELL'
+set -eux
+if [ "${TARGETARCH}" = "arm64" ]; then
+  exit 0
+fi
+
+git init /tmp/sonic-moe
+cd /tmp/sonic-moe
+git remote add origin https://github.com/Dao-AILab/sonic-moe.git
+git fetch --depth 1 origin "${SONICMOE_REF}"
+git checkout FETCH_HEAD
+uv pip install --no-deps .
+uv pip install \
+    "quack-kernels==0.6.1" \
+    "nvidia-cutlass-dsl==4.6.0" \
+    "apache-tvm-ffi>=0.1.10,<0.2"
+cd / && rm -rf /tmp/sonic-moe
+SHELL
+
 # Fail the build rather than a training run if any of the above moved the pinned
 # HF/torch stack, and confirm Gemma-4 CCE patches plus mamba-ssm are
 # wired up. find_spec only -- importing mamba_ssm/causal_conv1d loads CUDA
@@ -176,11 +204,14 @@ from cut_cross_entropy.transformers.patch import AXOLOTL_CCE_FORK, PATCH_FNS; \
 assert AXOLOTL_CCE_FORK, 'CCE is not the axolotl fork'; \
 missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unified_text') if k not in PATCH_FNS]; \
 assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
-absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d') if importlib.util.find_spec(m) is None]; \
+absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
 assert md.version('mamba_ssm').startswith('2.3.2'), 'unexpected mamba-ssm: ' + md.version('mamba_ssm'); \
 assert md.version('causal_conv1d').startswith('1.5.3'), 'unexpected causal-conv1d: ' + md.version('causal_conv1d'); \
 assert md.version('deep_ep').startswith('2.1.0'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
+assert md.version('sonic-moe').startswith('0.1.2'), 'unexpected sonic-moe: ' + md.version('sonic-moe'); \
+assert md.version('quack-kernels').startswith('0.6.1'), 'unexpected quack-kernels: ' + md.version('quack-kernels'); \
+assert md.version('nvidia-cutlass-dsl').startswith('4.6.0'), 'cutlass-dsl moved: ' + md.version('nvidia-cutlass-dsl'); \
 import deep_ep; \
 assert deep_ep.Buffer is not None; \
 print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| mamba-ssm', md.version('mamba_ssm'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"

@@ -13,6 +13,7 @@ import torch.distributed as dist
 _LOCAL_HUB_KERNEL_MODULES = {
     "causal-conv1d": "causal_conv1d",
     "mamba-ssm": "mamba_ssm",
+    "sonic-moe": "sonicmoe",
 }
 
 

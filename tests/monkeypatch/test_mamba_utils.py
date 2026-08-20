@@ -602,3 +602,24 @@ class TestPatchHubKernelsPreferLocal:
         finally:
             hub_kernels._KERNEL_MODULE_MAPPING.pop("causal-conv1d", None)
             hub_kernels.lazy_load_kernel = orig
+
+    def test_uses_local_sonicmoe_instead_of_hub(self):
+        pytest.importorskip("transformers.integrations.hub_kernels")
+        from transformers.integrations import hub_kernels
+
+        fake_local = types.ModuleType("sonicmoe")
+        orig = hub_kernels.lazy_load_kernel
+
+        def fail_hub(*_args, **_kwargs):
+            raise AssertionError("hub lazy_load_kernel should not run")
+
+        try:
+            hub_kernels.lazy_load_kernel = fail_hub
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            with patch.dict("sys.modules", {"sonicmoe": fake_local}):
+                patch_hub_kernels_prefer_local()
+                loaded = hub_kernels.lazy_load_kernel("sonic-moe")
+            assert loaded is fake_local
+        finally:
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
+            hub_kernels.lazy_load_kernel = orig

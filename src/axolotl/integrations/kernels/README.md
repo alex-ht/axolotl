@@ -39,10 +39,13 @@ use_sonicmoe: true
 - PyTorch 2.7+
 - For B300: Triton 3.6.x
 
-The sonic-moe kernel ships through the HF [`kernels`](https://github.com/huggingface/kernels) package. Transformers v5.8+ auto-fetches a prebuilt kernel from [`kernels-community/sonic-moe`](https://huggingface.co/kernels-community/sonic-moe) on first use:
+The sonic-moe kernel ships as the pip package [`sonic-moe`](https://github.com/Dao-AILab/sonic-moe) (import name `sonicmoe`). Axolotl prefers that local install over a Hugging Face Hub download. Transformers v5.8+ otherwise auto-fetches a prebuilt kernel from [`kernels-community/sonic-moe`](https://huggingface.co/kernels-community/sonic-moe) (Axolotl redirects to `axolotl-ai-co/sonic-moe`) on first use.
+
+Install from GitHub rather than current PyPI metadata (PyPI `0.1.2.post1` still pins `torch<=2.9.1` and `nvidia-cutlass-dsl==4.4.2`):
 
 ```bash
-uv pip install kernels "nvidia-cutlass-dsl==4.6.0" "apache-tvm-ffi>=0.1.10,<0.2"
+uv pip install --no-deps "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@9ffee8b6237a287370c8817ebed86f29e37f68ad"
+uv pip install kernels "quack-kernels==0.6.1" "nvidia-cutlass-dsl==4.6.0" "apache-tvm-ffi>=0.1.10,<0.2"
 ```
 
 `apache-tvm-ffi` is an undeclared runtime dependency of `nvidia-cutlass-dsl` 4.6.0 (absent from its `Requires-Dist`, so pip will not pull it); `<0.1.10` breaks `cute.compile`, so pin it explicitly.
