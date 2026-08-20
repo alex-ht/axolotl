@@ -1,5 +1,8 @@
 """CPU-only tests for the grouped NVFP4 base-GEMM backend override resolution."""
 
+import sys
+import types
+
 import pytest
 
 from axolotl.integrations.kernels.libs.scattermoe_lora import (
@@ -96,3 +99,43 @@ def test_deepgemm_available_is_sm100_only(monkeypatch, major, expected):
 def test_deepgemm_unavailable_without_cuda(monkeypatch):
     monkeypatch.setattr(dgq.torch.cuda, "is_available", lambda: False)
     assert dgq.deepgemm_grouped_available() is False
+
+
+def test_load_deepgemm_prefers_local_package(monkeypatch):
+    class LocalDG:
+        m_grouped_fp8_fp4_gemm_nt_contiguous = object()
+
+    fake = LocalDG()
+    monkeypatch.setitem(sys.modules, "deep_gemm", fake)
+    dgq._DG = None
+    try:
+        loaded = dgq._load_deepgemm()
+        assert loaded is fake
+    finally:
+        dgq._DG = None
+
+
+def test_load_deepgemm_uses_local_path_before_hub(monkeypatch, tmp_path):
+    fake = types.ModuleType("kernels_deepgemm")
+    fake.m_grouped_fp8_fp4_gemm_nt_contiguous = object()
+
+    kernels_mod = types.ModuleType("kernels")
+
+    def fake_get_local_kernel(path):
+        assert str(path) == str(tmp_path)
+        return fake
+
+    def fail_get_kernel(*_args, **_kwargs):
+        raise AssertionError("hub get_kernel should not run")
+
+    kernels_mod.get_local_kernel = fake_get_local_kernel
+    kernels_mod.get_kernel = fail_get_kernel
+    monkeypatch.setenv("AXOLOTL_DEEPGEMM_KERNEL_PATH", str(tmp_path))
+    monkeypatch.setitem(sys.modules, "deep_gemm", None)
+    monkeypatch.setitem(sys.modules, "kernels", kernels_mod)
+    dgq._DG = None
+    try:
+        loaded = dgq._load_deepgemm()
+        assert loaded is fake
+    finally:
+        dgq._DG = None

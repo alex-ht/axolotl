@@ -31,16 +31,40 @@ from .mx_weights import fp4_codebook
 _DG = None
 
 
+def _load_deepgemm():
+    """Resolve DeepGEMM: pip ``deep_gemm``, then a baked Hub snapshot, then Hub download."""
+    try:
+        import deep_gemm as local_dg
+    except ImportError:
+        local_dg = None
+    if (
+        local_dg is not None
+        and getattr(local_dg, "m_grouped_fp8_fp4_gemm_nt_contiguous", None) is not None
+    ):
+        return local_dg
+
+    import os
+    from pathlib import Path
+
+    local_path = os.environ.get("AXOLOTL_DEEPGEMM_KERNEL_PATH")
+    if local_path:
+        from kernels import get_local_kernel
+
+        return get_local_kernel(Path(local_path))
+
+    from kernels import get_kernel
+
+    # pin the branch, not the version: in the kernel repo both main and the v1 ref
+    # carry zero build variants, and only v2 publishes a torch 2.12+ build
+    return get_kernel("kernels-community/deep-gemm", revision="v2")
+
+
 def _dg():
     """Cached DeepGEMM kernel module. ``get_kernel`` is not idempotent — calling it twice
     re-runs the build's ``register_fake`` and raises, so resolve it once and reuse."""
     global _DG
     if _DG is None:
-        from kernels import get_kernel
-
-        # pin the branch, not the version: in the kernel repo both main and the v1 ref
-        # carry zero build variants, and only v2 publishes a torch 2.12 build
-        _DG = get_kernel("kernels-community/deep-gemm", revision="v2")
+        _DG = _load_deepgemm()
     return _DG
 
 

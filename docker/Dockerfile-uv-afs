@@ -124,7 +124,6 @@ ENV AXOLOTL_DO_NOT_TRACK=1
 #                   5.14.1 and take native flash_attention_4 dispatch with it
 #   hatchery      - the PyPI package of that name is an unrelated CD helper; the
 #                   `hatchery.core.client` the plugin imports is not published
-#   deep_gemm     - sdist only, provenance unverified (gates the FP8 MoE backward)
 #   sf_layout     - not published on PyPI at all (gates part of the FP4 CuTe path)
 # (`deep-ep` on PyPI is a name placeholder with no author, homepage or deps -- the
 #  real library is built from source below.)
@@ -189,6 +188,29 @@ uv pip install \
 cd / && rm -rf /tmp/sonic-moe
 SHELL
 
+# DeepGEMM, for ScatterMoE NVFP4 grouped GEMM (and optional sonicmoe fp8 backward).
+# JIT at first GPU use; no CUDA ext at image build. Clone GitHub: PyPI sdist is
+# unverified, and runtime get_kernel("kernels-community/deep-gemm") hits the Hub.
+ARG DEEPGEMM_REF="559d79fb6994a58b8a15b4b93bf13ccc16edf247"
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    DEEPGEMM_REF=${DEEPGEMM_REF} TARGETARCH=${TARGETARCH} \
+    <<'SHELL'
+set -eux
+if [ "${TARGETARCH}" = "arm64" ]; then
+  exit 0
+fi
+
+git init /tmp/DeepGEMM
+cd /tmp/DeepGEMM
+git remote add origin https://github.com/deepseek-ai/DeepGEMM.git
+git fetch --depth 1 origin "${DEEPGEMM_REF}"
+git checkout FETCH_HEAD
+git submodule update --init --recursive --depth 1
+uv pip install --no-build-isolation .
+cd / && rm -rf /tmp/DeepGEMM
+SHELL
+
 # Fail the build rather than a training run if any of the above moved the pinned
 # HF/torch stack, and confirm Gemma-4 CCE patches plus mamba-ssm are
 # wired up. find_spec only -- importing mamba_ssm/causal_conv1d loads CUDA
@@ -204,7 +226,7 @@ from cut_cross_entropy.transformers.patch import AXOLOTL_CCE_FORK, PATCH_FNS; \
 assert AXOLOTL_CCE_FORK, 'CCE is not the axolotl fork'; \
 missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unified_text') if k not in PATCH_FNS]; \
 assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
-absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe') if importlib.util.find_spec(m) is None]; \
+absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe', 'deep_gemm') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
 assert md.version('mamba_ssm').startswith('2.3.2'), 'unexpected mamba-ssm: ' + md.version('mamba_ssm'); \
 assert md.version('causal_conv1d').startswith('1.5.3'), 'unexpected causal-conv1d: ' + md.version('causal_conv1d'); \
