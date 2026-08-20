@@ -242,6 +242,27 @@ axolotl delinearize-llama4 --model path/to/model_dir --output path/to/output_dir
 
 This would be necessary to use with other frameworks. If you have an adapter, merge it with the non-quantized linearized model before delinearizing.
 
+### convert-gpt-oss-mxfp4
+
+Converts a GPT-OSS BF16 checkpoint (or a LoRA adapter + MXFP4 base) back to the original OpenAI MXFP4 weight-only format used by vLLM, SGLang, and TensorRT-LLM. Requires the `modelopt` extra (`nvidia-modelopt`). Docker images install this extra by default.
+
+This is not [`axolotl quantize`](./quantize.qmd); torchao MXFP4 is a different checkpoint layout.
+
+```bash
+# Full fine-tune / already-merged BF16 checkpoint
+axolotl convert-gpt-oss-mxfp4 \
+  --model-path ./outputs/gpt-oss-out \
+  --output-path ./outputs/gpt-oss-mxfp4
+
+# LoRA adapter
+axolotl convert-gpt-oss-mxfp4 \
+  --lora-path ./outputs/gpt-oss-out \
+  --base-path openai/gpt-oss-20b \
+  --output-path ./outputs/gpt-oss-mxfp4
+```
+
+See [the GPT-OSS examples](https://github.com/axolotl-ai-cloud/axolotl/tree/main/examples/gpt-oss) for the post-training workflow.
+
 ### quantize
 
 Quantizes a model using the quantization configuration specified in your YAML file.

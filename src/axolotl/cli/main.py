@@ -369,6 +369,56 @@ def delinearize_llama4(model: str, output: str):
     do_delinearize_llama4(model, output)
 
 
+@cli.command("convert-gpt-oss-mxfp4")
+@click.option(
+    "--model-path",
+    type=str,
+    default=None,
+    help="Path to a BF16 GPT-OSS checkpoint (FFT or already merged).",
+)
+@click.option(
+    "--lora-path",
+    type=str,
+    default=None,
+    help="Path to LoRA adapter weights. Mutually exclusive with --model-path.",
+)
+@click.option(
+    "--base-path",
+    type=str,
+    default=None,
+    help="Base model used for LoRA. Required with --lora-path.",
+)
+@click.option(
+    "--output-path",
+    type=str,
+    required=True,
+    help="Directory to write the OpenAI MXFP4 checkpoint.",
+)
+@click.option(
+    "--trust-remote-code",
+    is_flag=True,
+    default=False,
+    help="Pass trust_remote_code to HuggingFace loaders.",
+)
+def convert_gpt_oss_mxfp4(
+    model_path: Optional[str],
+    lora_path: Optional[str],
+    base_path: Optional[str],
+    output_path: str,
+    trust_remote_code: bool,
+):
+    """Convert a GPT-OSS BF16 (or LoRA) checkpoint back to OpenAI MXFP4."""
+    from axolotl.cli.convert_gpt_oss_mxfp4 import do_cli as do_convert_gpt_oss_mxfp4
+
+    do_convert_gpt_oss_mxfp4(
+        output_path=output_path,
+        model_path=model_path,
+        lora_path=lora_path,
+        base_path=base_path,
+        trust_remote_code=trust_remote_code,
+    )
+
+
 @cli.command("generate-cli-config-options")
 @click.option(
     "--output",

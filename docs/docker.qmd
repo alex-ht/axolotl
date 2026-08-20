@@ -55,7 +55,7 @@ Tags examples:
 
 ## Main
 
-The main image is the image that is used to run Axolotl. It is based on the `axolotlai/axolotl-base` image and includes the Axolotl codebase, dependencies, and more.
+The main image is the image that is used to run Axolotl. It is based on the `axolotlai/axolotl-base` image and includes the Axolotl codebase, dependencies, and more. Default extras are `deepspeed`, `optimizers`, `ray`, and `modelopt` (NVIDIA Model Optimizer, for GPT-OSS MXFP4 export).
 
 #### Image
 

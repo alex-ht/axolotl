@@ -43,6 +43,12 @@ source .venv/bin/activate
 uv pip install --no-build-isolation axolotl[deepspeed]
 ```
 
+Official Docker images also install the `modelopt` extra (`nvidia-modelopt`) so GPT-OSS MXFP4 export (`axolotl convert-gpt-oss-mxfp4`) works out of the box. For a local install that needs the same:
+
+```{.bash}
+uv pip install --no-build-isolation 'axolotl[deepspeed,modelopt]'
+```
+
 ### Edge/Development Build {#sec-edge-build}
 
 For the latest features between releases:

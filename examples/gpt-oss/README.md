@@ -76,6 +76,30 @@ chat_template_kwargs:
 
 Currently, this applies globally. There is no method to apply per sample yet. If you are interested in adding this, please feel free to create an Issue to discuss.
 
+### Convert back to MXFP4
+
+Training dequantizes GPT-OSS to BF16 (`Mxfp4Config` + `dequantize: true`). The saved checkpoint is about 4× larger than the original OpenAI MXFP4 weights, and vLLM / SGLang / TensorRT-LLM expect the original `quant_method: mxfp4` layout (`*_blocks` / `*_scales` on expert weights).
+
+This is **not** `axolotl quantize` (torchao MXFP4). Use NVIDIA Model Optimizer's GPT-OSS conversion:
+
+```bash
+# Docker images include nvidia-modelopt by default. Local installs:
+uv pip install --no-build-isolation 'axolotl[modelopt]'
+
+# Full fine-tune (or already-merged) BF16 checkpoint
+axolotl convert-gpt-oss-mxfp4 \
+  --model-path ./outputs/gpt-oss-out \
+  --output-path ./outputs/gpt-oss-mxfp4
+
+# LoRA: merge the adapter into the MXFP4 base, then export
+axolotl convert-gpt-oss-mxfp4 \
+  --lora-path ./outputs/gpt-oss-out \
+  --base-path openai/gpt-oss-20b \
+  --output-path ./outputs/gpt-oss-mxfp4
+```
+
+If you trained with FSDP, rename `FSDPGptOssForCausalLM` in `config.json` first (see the errata above). Then point vLLM / SGLang at `./outputs/gpt-oss-mxfp4`.
+
 ### Inferencing your fine-tuned model
 
 #### vLLM
