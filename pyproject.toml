@@ -63,7 +63,7 @@ dependencies = [
     "lm_eval==0.4.11",
     "langdetect==1.0.9",
     "immutabledict==4.2.0",
-    "antlr4-python3-runtime==4.13.2",
+    "antlr4-python3-runtime==4.9.3",
 
     "schedulefree==1.4.1",
     "openenv-core==0.1.0",
@@ -247,9 +247,10 @@ markers = [
 
 # UV specific configuration
 [tool.uv]
-# nvidia-modelopt (via omegaconf) wants antlr4-python3-runtime 4.9; lm_eval needs 4.13.2.
+# nvidia-modelopt (via omegaconf) requires antlr4-python3-runtime==4.9.*;
+# override any 4.13.x that would otherwise win the resolve.
 override-dependencies = [
-    "antlr4-python3-runtime==4.13.2",
+    "antlr4-python3-runtime==4.9.3",
 ]
 conflicts = [
     [
