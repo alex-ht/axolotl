@@ -139,6 +139,31 @@ def _ep_expert_from_local(sharded_meta_param, full_local, nvfp4_cls):
     return DTensor.from_local(local_nv, mesh, placements, run_check=False)
 
 
+def _ep_plain_expert_from_local(sharded_meta_param, full_local):
+    """Build an EP-sharded expert DTensor from THIS rank's already-correct ``[E_local]``
+    copy — NO collective. ``shard_expert_weights`` scattered each rank its ep-group slice
+    into ``full_local``; slice this rank's dp/cp shard and wrap with ``from_local``.
+
+    ``distribute_tensor(src_data_rank=0)`` on a dp_shard SUBGROUP mesh either deadlocks
+    (global rank 0 is not in ep-groups 1..N) or replicates rank 0's experts onto every
+    ep group (dequantized GPT-OSS 120B + ``cpu_ram_efficient_loading``).
+    """
+    from torch.distributed.tensor import DTensor
+
+    from axolotl.integrations.expert_parallel.shard import ep_weight_load_local_shard
+
+    mesh = sharded_meta_param.device_mesh
+    placements = sharded_meta_param.placements
+    dp_rank = dist.get_group_rank(mesh.get_group(), dist.get_rank())
+    local = ep_weight_load_local_shard(
+        full_local.to(device=mesh.device_type),
+        placements,
+        mesh.size(),
+        dp_rank,
+    )
+    return DTensor.from_local(local, mesh, placements, run_check=False)
+
+
 def fsdp2_load_full_state_dict(
     _accelerator, model: torch.nn.Module, full_sd: dict, offload_to_cpu: bool = False
 ):
@@ -236,6 +261,14 @@ def fsdp2_load_full_state_dict(
                     device_mesh.device_type,
                     nvfp4_cls,
                 )
+        elif _is_ep_expert_param(param_name) and hasattr(
+            sharded_meta_param, "device_mesh"
+        ):
+            # EP×dp_shard/cp, plain (bf16 / dequantized) experts: same local-slice path as
+            # NVFP4 above. full_sd already holds THIS rank's [E_local] from shard_expert_weights.
+            sharded_param = _ep_plain_expert_from_local(
+                sharded_meta_param, full_sd[param_name]
+            )
         elif (
             ".experts." in param_name
             and (".lora_A." in param_name or ".lora_B." in param_name)
@@ -260,7 +293,18 @@ def fsdp2_load_full_state_dict(
             mesh = sharded_meta_param.device_mesh
             placements = sharded_meta_param.placements
             dp_size = mesh.size()
-            ep_size = dist.get_world_size() // dp_size
+            ep_group = getattr(model, "_ep_lora_group", None)
+            if ep_group is not None:
+                ep_size = dist.get_world_size(ep_group)
+                ep_coord = dist.get_rank(ep_group)
+            else:
+                root = mesh._get_root_mesh()
+                if root is None or "ep" not in (root.mesh_dim_names or ()):
+                    raise RuntimeError(
+                        "EP LoRA load needs model._ep_lora_group or an 'ep' mesh axis"
+                    )
+                ep_size = root["ep"].size()
+                ep_coord = root["ep"].get_local_rank()
             ep_dim = 0 if ".lora_A." in param_name else 1
             dev = mesh.device_type
             gshape = list(sharded_meta_param.size())
@@ -270,9 +314,6 @@ def fsdp2_load_full_state_dict(
             else:
                 g = torch.empty(gshape, device=dev, dtype=sharded_meta_param.dtype)
             dist.broadcast(g, src=0)
-            # `ep` is the innermost mesh axis, so the dp_shard subgroup's smallest rank is this
-            # rank's ep coordinate (rank = dp_rank * ep_size + ep_rank).
-            ep_coord = min(dist.get_process_group_ranks(mesh.get_group())) % ep_size
             dp_rank = dist.get_group_rank(mesh.get_group(), dist.get_rank())
             local = ep_adapter_load_local_shard(
                 g,

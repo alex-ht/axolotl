@@ -26,10 +26,13 @@ from axolotl.integrations.expert_parallel.experts_fn import (
 )
 from axolotl.integrations.expert_parallel.plugin import expert_shard_axis
 from axolotl.integrations.expert_parallel.shard import (
+    _all_gather_ep_ranks,
     _detect_experts_modules,
     _expert_up_name,
+    _scatter_dim0_chunks,
     _slice_expert_lora_param,
     ep_adapter_load_local_shard,
+    ep_weight_load_local_shard,
     shard_expert_weights,
 )
 
@@ -438,7 +441,9 @@ def _ep_topology_worker(rank, world_size, ep_size, dp_shard_size, port, q):
             if mesh is not None and "dp_shard" in mesh.mesh_dim_names
             else None
         )
-        q.put((rank, ep_ranks, dp_ranks))
+        ep_rank = dist.get_rank(ep_group)
+        gathered = _all_gather_ep_ranks(ep_group)
+        q.put((rank, ep_ranks, dp_ranks, ep_rank, gathered))
     finally:
         dist.destroy_process_group()
         ExpertParallelPlugin._device_mesh = None
@@ -622,8 +627,8 @@ class TestMeshTopology:
         """
         results = _spawn_topology_check(world_size=4, ep_size=2, dp_shard_size=2)
         # Build per-rank groupings from results.
-        ep_groups_by_rank = {r: tuple(eps) for r, eps, _ in results}
-        dp_groups_by_rank = {r: tuple(dps) for r, _, dps in results}
+        ep_groups_by_rank = {row[0]: tuple(row[1]) for row in results}
+        dp_groups_by_rank = {row[0]: tuple(row[2]) for row in results}
 
         # EP groups (contiguous): {0,1} and {2,3}
         assert ep_groups_by_rank[0] == (0, 1), ep_groups_by_rank
@@ -637,12 +642,22 @@ class TestMeshTopology:
         assert dp_groups_by_rank[2] == (0, 2), dp_groups_by_rank
         assert dp_groups_by_rank[3] == (1, 3), dp_groups_by_rank
 
+        # Scatter dest rank r must use get_rank(ep_group), not r%ep_size / r//dp.
+        # {0,1} -> ep_rank 0,1; {2,3} -> ep_rank 0,1. All ranks agree on the map.
+        expected_ep_rank = {0: 0, 1: 1, 2: 0, 3: 1}
+        expected_map = [0, 1, 0, 1]
+        for rank, _eps, _dps, ep_rank, gathered in results:
+            assert ep_rank == expected_ep_rank[rank], (rank, ep_rank)
+            assert gathered == expected_map, (rank, gathered)
+
     def test_world4_ep4_dp1_uses_world(self):
         """ep_size == world_size short-circuits to dist.group.WORLD."""
         results = _spawn_topology_check(world_size=4, ep_size=4, dp_shard_size=1)
-        for rank, ep_ranks, dp_ranks in results:
+        for rank, ep_ranks, dp_ranks, ep_rank, gathered in results:
             assert ep_ranks == [0, 1, 2, 3], (rank, ep_ranks)
             assert dp_ranks is None  # no 2D mesh built
+            assert ep_rank == rank, (rank, ep_rank)
+            assert gathered == [0, 1, 2, 3], (rank, gathered)
 
     def _spawn_expects_error(self, ep_size, dp_shard_size, world_size=4):
         ctx = mp.get_context("spawn")
@@ -674,6 +689,100 @@ class TestMeshTopology:
         for rank, err in results:
             assert err is not None, f"rank {rank} did not raise"
             assert "must equal" in err.lower() or "world_size" in err.lower(), err
+
+
+class TestScatterEpRankMapping:
+    """WORLD scatter list is keyed by each dest rank's EP-group local rank, not a
+    global-rank ``% ep_size`` / ``// dp_size`` formula. The 16-rank (2-node × 8 GPU,
+    ep=8 × dp=2) case is the GPT-OSS 120B + EP+FSDP2 layout: ranks strided by
+    ep_size share a slice. Pure tensor ops — the distributed mapping is covered by
+    ``TestMeshTopology.test_world4_ep2_dp2_orthogonal``.
+    """
+
+    def test_world16_ep8_dp2_dp_pairs_share_slice(self):
+        e_local, ep_size, dp_size = 4, 8, 2
+        e_global = ep_size * e_local
+        full = (
+            torch.arange(e_global, dtype=torch.float32)
+            .unsqueeze(1)
+            .expand(e_global, 3)
+            .contiguous()
+            .clone()
+        )
+        # Innermost-ep mesh (rank = dp * ep_size + ep): the production mapping
+        # comes from get_rank(ep_group), which equals this for that mesh order.
+        ep_ranks = [r % ep_size for r in range(ep_size * dp_size)]
+        chunks = _scatter_dim0_chunks(full, e_local, ep_ranks)
+        assert len(chunks) == ep_size * dp_size
+        for r, ep_rank in enumerate(ep_ranks):
+            start = ep_rank * e_local
+            assert torch.equal(
+                chunks[r][:, 0],
+                torch.arange(start, start + e_local, dtype=torch.float32),
+            )
+        for ep_rank in range(ep_size):
+            assert torch.equal(chunks[ep_rank], chunks[ep_size + ep_rank])
+
+    def test_old_outermost_div_formula_sends_wrong_slice(self):
+        e_local, ep_size, dp_size = 4, 8, 2
+        world = ep_size * dp_size
+        e_global = ep_size * e_local
+        full = (
+            torch.arange(e_global, dtype=torch.float32)
+            .unsqueeze(1)
+            .expand(e_global, 3)
+            .contiguous()
+            .clone()
+        )
+        correct = _scatter_dim0_chunks(
+            full, e_local, [r % ep_size for r in range(world)]
+        )
+        # Pre-fix: ep outermost used r // dp_size. Rank 1 would get slice 0
+        # instead of slice 1; rank 8 would get slice 4 instead of slice 0.
+        wrong = _scatter_dim0_chunks(
+            full, e_local, [r // dp_size for r in range(world)]
+        )
+        assert not torch.equal(correct[1], wrong[1])
+        assert not torch.equal(correct[8], wrong[8])
+
+
+class TestEpWeightLoadLocalShard:
+    """cpu_ram_efficient load of plain (non-NVFP4) EP×dp_shard experts slices the
+    already-scattered ``[E_local]`` tensor along the FSDP placements — no EP-axis
+    arithmetic, no distribute_tensor from global rank 0.
+    """
+
+    @pytest.mark.parametrize(
+        "e_local,dp_size,hidden", [(16, 2, 5), (8, 4, 3), (4, 1, 7)]
+    )
+    def test_shard0_reassembles_to_ep_slice(self, e_local, dp_size, hidden):
+        from torch.distributed.tensor import Shard
+
+        full = torch.arange(e_local * hidden, dtype=torch.float32).reshape(
+            e_local, hidden
+        )
+        placements = (Shard(0),)
+        shards = [
+            ep_weight_load_local_shard(full, placements, dp_size, dp)
+            for dp in range(dp_size)
+        ]
+        assert torch.equal(torch.cat(shards, dim=0), full)
+
+    def test_does_not_use_global_rank_formula(self):
+        from torch.distributed.tensor import Shard
+
+        # Two dp ranks of the same ep group both start from the SAME [E_local]
+        # tensor (already the ep slice). A global-rank % / // formula would
+        # pick a different ep slice per dp rank.
+        e_local, hidden = 8, 3
+        full = torch.arange(e_local * hidden, dtype=torch.float32).reshape(
+            e_local, hidden
+        )
+        a = ep_weight_load_local_shard(full, (Shard(0),), 2, 0)
+        b = ep_weight_load_local_shard(full, (Shard(0),), 2, 1)
+        assert a.shape[0] == b.shape[0] == e_local // 2
+        assert not torch.equal(a, b)
+        assert torch.equal(torch.cat([a, b], dim=0), full)
 
 
 class TestExpertLoraSlicing:

@@ -53,16 +53,57 @@ def _replace_with_slice(module, attr_name: str, start: int, end: int) -> None:
     # `old` goes out of scope on return.
 
 
-def _scatter_expert_from_rank0(module, attr_name, e_local, ep_size):
+def _all_gather_ep_ranks(ep_group) -> list[int]:
+    """World-sized list: ``out[global_rank]`` is that rank's rank in its EP process group.
+
+    Uses ``dist.get_rank(ep_group)`` on every rank, so the mapping follows the
+    actual mesh/group — not a global-rank ``%`` / ``//`` that assumes ``ep`` is
+    a particular mesh axis.
+    """
+    device = (
+        torch.device("cuda", torch.cuda.current_device())
+        if dist.get_backend() == "nccl"
+        else torch.device("cpu")
+    )
+    mine = torch.tensor([dist.get_rank(ep_group)], dtype=torch.int64, device=device)
+    gathered = [torch.empty_like(mine) for _ in range(dist.get_world_size())]
+    dist.all_gather(gathered, mine)
+    return [int(t.item()) for t in gathered]
+
+
+def _scatter_dim0_chunks(full, e_local: int, ep_ranks: list[int]):
+    """WORLD scatter list: dest rank ``r`` gets ``full``'s slice for ``ep_ranks[r]``."""
+    return [
+        full[ep_rank * e_local : (ep_rank + 1) * e_local].contiguous()
+        for ep_rank in ep_ranks
+    ]
+
+
+def ep_weight_load_local_shard(full_local, placements, dp_size, dp_rank):
+    """Slice THIS rank's FSDP shard out of an already EP-sliced ``[E_local]`` expert tensor.
+
+    Inverse of the dp/cp ``fully_shard`` after :func:`shard_expert_weights`. No EP-axis
+    arithmetic — ``full_local`` is already this ep-group's experts.
+    """
+    from torch.distributed.tensor import Shard
+
+    local = full_local
+    for placement in placements:
+        if isinstance(placement, Shard):
+            local = local.chunk(dp_size, dim=placement.dim)[dp_rank]
+    return local.contiguous()
+
+
+def _scatter_expert_from_rank0(module, attr_name, e_local, ep_ranks):
     """Populate ``module.{attr_name}`` with THIS rank's real ``[e_local]`` expert slice by scattering
     GLOBAL rank-0's full expert tensor over the WORLD group. Under cpu_ram_efficient_loading only global
     rank 0 materializes real weights, so it is the single source (sourcing from an ep-subgroup's rank-0
-    would crash on the meta ranks). Each rank ``r`` receives its ep-group's slice
-    ``full[(r%ep_size)*e_local : ((r%ep_size)+1)*e_local]`` — ``ep`` is the innermost mesh axis, so
-    ranks strided by ``ep_size`` share the same ep slice (the dp axis FSDP-shards it across them later).
-    ``ep_size == world_size`` is pure EP (each rank its own [e_local]); ``ep_size < world_size`` is
-    EP×dp_shard / EP×cp composition. Handles torchao NVFP4Tensor (qdata/scale/per_tensor_scale) and
-    plain tensors; runs on GPU (NCCL), result moved to the param's original device."""
+    would crash on the meta ranks). Dest rank ``r`` receives
+    ``full[ep_ranks[r]*e_local : (ep_ranks[r]+1)*e_local]``, where ``ep_ranks`` is
+    :func:`_all_gather_ep_ranks` — ranks that share an EP-group local rank get the SAME
+    slice (the dp axis FSDP-shards it across them later). Handles torchao NVFP4Tensor
+    (qdata/scale/per_tensor_scale) and plain tensors; runs on GPU (NCCL), result moved to
+    the param's original device."""
     import torch.distributed as dist
 
     old = getattr(module, attr_name)
@@ -80,11 +121,12 @@ def _scatter_expert_from_rank0(module, attr_name, e_local, ep_size):
         chunks = None
         if is_src:
             chunks = [
-                full_comp[(r % ep_size) * e_local : (r % ep_size + 1) * e_local]
-                .contiguous()
-                .to(dev)
-                for r in range(world)
+                c.to(dev) for c in _scatter_dim0_chunks(full_comp, e_local, ep_ranks)
             ]
+            if len(chunks) != world:
+                raise RuntimeError(
+                    f"EP scatter list length {len(chunks)} != world_size {world}"
+                )
         dist.scatter(out, scatter_list=chunks, src=0)
         return out
 
@@ -199,6 +241,7 @@ def shard_expert_weights(model, ep_group) -> int:
         return 0
 
     ep_rank = dist.get_rank(ep_group)
+    ep_ranks: list[int] | None = None
     sharded = 0
     ignore_names: list[str] = []
 
@@ -219,12 +262,14 @@ def shard_expert_weights(model, ep_group) -> int:
         # Scatter global rank-0's REAL experts to every rank's ep-group slice. Under
         # cpu_ram_efficient_loading only global rank 0 has data; plain-slicing (the old path) kept
         # only rank 0's own ep-group's slice and zeroed the rest, so ep-groups 1..N had dead experts.
-        # ep_size<world (EP×dp_shard / EP×cp) gives the dp ranks within an ep-group the same ep slice;
-        # the FSDP dp-axis shards it across them afterwards. See _scatter_expert_from_rank0.
+        # Ranks that share an EP-group local rank get the same slice; the FSDP dp-axis shards it
+        # across them afterwards. See _scatter_expert_from_rank0.
+        if ep_ranks is None:
+            ep_ranks = _all_gather_ep_ranks(ep_group)
         bias_names = (_expert_up_bias_name(up_name), "down_proj_bias")
         with torch.no_grad():
-            _scatter_expert_from_rank0(module, up_name, E_local, ep_size)
-            _scatter_expert_from_rank0(module, "down_proj", E_local, ep_size)
+            _scatter_expert_from_rank0(module, up_name, E_local, ep_ranks)
+            _scatter_expert_from_rank0(module, "down_proj", E_local, ep_ranks)
             for bias_name in bias_names:
                 bias = getattr(module, bias_name, None)
                 if (
@@ -232,7 +277,7 @@ def shard_expert_weights(model, ep_group) -> int:
                     and bias.dim() >= 1
                     and bias.shape[0] == E
                 ):
-                    _scatter_expert_from_rank0(module, bias_name, E_local, ep_size)
+                    _scatter_expert_from_rank0(module, bias_name, E_local, ep_ranks)
 
         # Stash metadata the registered fn needs.
         module.local_expert_offset = start

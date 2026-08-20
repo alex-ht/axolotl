@@ -3,8 +3,9 @@
 Two extensions:
 - Allow pure CP standalone via `ACCELERATE_ALLOW_CP_STANDALONE`.
 - Add Expert Parallel (`ep`) as a first-class mesh axis inside the
-  data-parallel group. Mesh order is `(ep, dp_replicate, dp_shard, cp, sp, tp)`
-  so the dp axes stay contiguous (required for `_flatten("dp")`).
+  data-parallel group. Mesh order is `(dp_replicate, dp_shard, ep, cp, sp, tp)`
+  so the dp block stays contiguous (required for `_flatten("dp")`) and the EP
+  group is contiguous within a node when only `dp_shard`×`ep` is active.
 
 See `expert_parallel/README.md` for the full integration story.
 """
@@ -44,8 +45,9 @@ def _patched_ep_enabled(self):
 
 def _patched_dp_dim_names(self):
     """DP axes (different ranks see different data). EP is included — each
-    EP rank pulls its own batch. ``ep`` is innermost so the EP group is
-    contiguous within a node (intranode DeepEP IPC can't cross nodes)."""
+    EP rank pulls its own batch. ``ep`` sits after ``dp_shard`` so the EP
+    group is contiguous within a node when composing with FSDP (intranode
+    DeepEP IPC can't cross nodes)."""
     dims = []
     if self.dp_replicate_enabled:
         dims += ["dp_replicate"]
@@ -60,8 +62,8 @@ def _patched_dp_shard_cp_dim_names(self):
     """Axes the outer FSDP wrap shards along (flattened into `dp_shard_cp`).
     Including `ep` makes non-expert grads reduce-scatter across the full
     world; experts are pre-wrapped on `mesh["dp_shard"]` only and skipped
-    by the auto-wrap walker. ``ep`` sits after ``dp_shard`` so the EP group
-    stays contiguous within a node."""
+    by the auto-wrap walker. ``ep`` sits after ``dp_shard`` so the flattened
+    FSDP group still has a contiguous-within-node EP subgroup."""
     dims = []
     if self.dp_shard_enabled:
         dims += ["dp_shard"]

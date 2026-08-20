@@ -312,10 +312,11 @@ class ExpertParallelPlugin(BasePlugin):
             if mesh is None or "ep" not in (mesh.mesh_dim_names or ()):
                 from torch.distributed.device_mesh import init_device_mesh
 
-                # Fallback mesh from the >1 axes. `ep` is innermost so the EP group is
-                # contiguous within a node (intranode DeepEP IPC can't cross nodes);
-                # `dp_shard`/`cp` are outer. Orthogonality of the ep/cp/dp groups is what
-                # matters; accelerate's mesh is preferred when present so the ep group
+                # Fallback mesh from the >1 axes. `ep` last so the EP group is
+                # contiguous (intranode DeepEP IPC can't cross nodes); `dp_shard`/`cp`
+                # are outer. Rank→expert mapping uses the EP process-group rank, not
+                # a global-rank formula, so this order need not match accelerate's
+                # mesh. Accelerate's mesh is preferred when present so the ep group
                 # matches the one used for the experts' FSDP exclusion.
                 axes = []
                 if dp_shard_size > 1:
