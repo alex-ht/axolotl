@@ -76,6 +76,12 @@ Both paths detect PEFT `ParamWrapper` on individual expert parameters (`target_p
 
 Train LoRA on ModelOpt NVFP4 checkpoint via ScatterMoE. Routed experts are dequantized to bf16 (W4A16).
 
+The bf16 Triton experts path is vendored in-tree (no Hub download). The optional SM100 grouped NVFP4 GEMM prefers a pip-installed [`deep_gemm`](https://github.com/deepseek-ai/DeepGEMM) package over `kernels.get_kernel("kernels-community/deep-gemm")`.
+
+```bash
+uv pip install --no-build-isolation "deep-gemm @ git+https://github.com/deepseek-ai/DeepGEMM.git@559d79fb6994a58b8a15b4b93bf13ccc16edf247"
+```
+
 Requires:
 - CUDA GPU with Triton.
 - `qwen3_moe`, `qwen3_next`, `deepseek_v4`, `glm_moe_dsa`, and `gemma4_text`

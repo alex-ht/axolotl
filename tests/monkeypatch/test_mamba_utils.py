@@ -623,3 +623,24 @@ class TestPatchHubKernelsPreferLocal:
         finally:
             hub_kernels._KERNEL_MODULE_MAPPING.pop("sonic-moe", None)
             hub_kernels.lazy_load_kernel = orig
+
+    def test_uses_local_deep_gemm_instead_of_hub(self):
+        pytest.importorskip("transformers.integrations.hub_kernels")
+        from transformers.integrations import hub_kernels
+
+        fake_local = types.ModuleType("deep_gemm")
+        orig = hub_kernels.lazy_load_kernel
+
+        def fail_hub(*_args, **_kwargs):
+            raise AssertionError("hub lazy_load_kernel should not run")
+
+        try:
+            hub_kernels.lazy_load_kernel = fail_hub
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("deep-gemm", None)
+            with patch.dict("sys.modules", {"deep_gemm": fake_local}):
+                patch_hub_kernels_prefer_local()
+                loaded = hub_kernels.lazy_load_kernel("deep-gemm")
+            assert loaded is fake_local
+        finally:
+            hub_kernels._KERNEL_MODULE_MAPPING.pop("deep-gemm", None)
+            hub_kernels.lazy_load_kernel = orig

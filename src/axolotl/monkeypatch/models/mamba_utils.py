@@ -14,6 +14,7 @@ _LOCAL_HUB_KERNEL_MODULES = {
     "causal-conv1d": "causal_conv1d",
     "mamba-ssm": "mamba_ssm",
     "sonic-moe": "sonicmoe",
+    "deep-gemm": "deep_gemm",
 }
 
 
