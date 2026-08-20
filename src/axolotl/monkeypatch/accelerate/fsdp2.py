@@ -450,6 +450,21 @@ def get_state_dict(self, model, unwrap=True):
         # https://github.com/pytorch/torchtune/blob/main/torchtune/training/_distributed.py#L465
         from torch.distributed.tensor import DTensor
 
+        from axolotl.integrations.expert_parallel.shard import (
+            gather_expert_full,
+            is_ep_sharded_expert_param,
+        )
+
+        # EP physically slices experts to [E_local] before FSDP wrap. full_tensor()
+        # only all-gathers the dp_shard/cp mesh, so without an EP concat the
+        # FULL_STATE_DICT checkpoint would keep rank 0's experts only.
+        ep_group = getattr(model, "_ep_lora_group", None)
+        ep_gather = (
+            ep_group is not None
+            and dist.is_initialized()
+            and dist.get_world_size(ep_group) > 1
+        )
+
         state_dict = {}
         sharded_state_dict = model.state_dict()
         is_rank_zero = torch.distributed.get_rank() == 0
@@ -459,6 +474,9 @@ def get_state_dict(self, model, unwrap=True):
 
             if isinstance(param, DTensor):
                 param = param.full_tensor()
+
+            if ep_gather and is_ep_sharded_expert_param(param_name):
+                param = gather_expert_full(param, ep_group)
 
             if is_rank_zero:
                 state_dict[param_name] = param.cpu()
@@ -744,12 +762,21 @@ def fsdp2_prepare_model(accelerator, model: torch.nn.Module) -> torch.nn.Module:
             if ".experts." in n
             and ".shared_experts." not in n
             and n.rsplit(".", 1)[-1]
-            in ("gate_up_proj", "down_proj", "gate_up_proj_bias", "down_proj_bias")
+            in (
+                "gate_up_proj",
+                "up_proj",
+                "down_proj",
+                "gate_up_proj_bias",
+                "up_proj_bias",
+                "down_proj_bias",
+            )
         }
         if ep_ignored:
             fsdp2_kwargs["ignored_params"] = (
                 set(fsdp2_kwargs.get("ignored_params") or set()) | ep_ignored
             )
+            if dist.is_initialized():
+                model._ep_lora_group = dist.group.WORLD
             LOG.info(
                 f"expert_parallel (pure EP): excluded {len(ep_ignored)} EP-sharded expert "
                 "param(s) from the FSDP wrap (kept as plain per-rank slices)."

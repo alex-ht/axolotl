@@ -649,6 +649,47 @@ def save_fsdp2_lora_adapter(model, output_dir: str) -> bool:
     return True
 
 
+EP_EXPERT_PARAM_SUFFIXES = frozenset(
+    {
+        "gate_up_proj",
+        "up_proj",
+        "down_proj",
+        "gate_up_proj_bias",
+        "up_proj_bias",
+        "down_proj_bias",
+    }
+)
+
+
+def is_ep_sharded_expert_param(name: str) -> bool:
+    """True for routed-expert weights that EP slices along dim 0.
+
+    Matches ``*.experts.{gate_up,up,down}_proj{,_bias}`` and survives FSDP /
+    activation-checkpoint infixes. ``shared_experts`` has no ``.experts.`` infix.
+    LoRA keys end in ``weight`` / ``lora_*`` and do not match.
+    """
+    if ".experts." not in name:
+        return False
+    return name.rsplit(".", 1)[-1] in EP_EXPERT_PARAM_SUFFIXES
+
+
+def gather_expert_full(local: torch.Tensor, ep_group) -> torch.Tensor:
+    """Inverse of the EP dim-0 slice: all-gather local expert tensors and concat to E_global.
+
+    FSDP ``full_tensor()`` only reconstructs the dp_shard/cp mesh; expert content is
+    still ``[E_local, ...]`` per EP rank. Rank order in ``ep_group`` matches
+    ``shard_expert_weights`` (``ep_rank * E_local``).
+    """
+    if ep_group is None or not dist.is_available() or not dist.is_initialized():
+        return local
+    ep_size = dist.get_world_size(ep_group)
+    if ep_size <= 1:
+        return local
+    gathered = [torch.empty_like(local) for _ in range(ep_size)]
+    dist.all_gather(gathered, local.contiguous(), group=ep_group)
+    return torch.cat(gathered, dim=0)
+
+
 def gather_expert_lora_full(local: torch.Tensor, kind: str, e_global: int, ep_group):
     """Inverse of the EP LoRA slice: all-gather a local-experts LoRA tensor across the
     EP group and reassemble the full ``e_global``-expert tensor in the PEFT layout.

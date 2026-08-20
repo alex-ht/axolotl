@@ -33,6 +33,8 @@ from axolotl.integrations.expert_parallel.shard import (
     _slice_expert_lora_param,
     ep_adapter_load_local_shard,
     ep_weight_load_local_shard,
+    gather_expert_full,
+    is_ep_sharded_expert_param,
     shard_expert_weights,
 )
 
@@ -1101,3 +1103,113 @@ class TestEpLoraSaveGating:
 
         assert shard_expert_lora(m, 1) == 0
         assert getattr(m.wrapper, "_ep_lora_sharded", False) is False
+
+
+class TestEpFullStateDictGather:
+    """FFT FULL_STATE_DICT must EP-concat expert dim0; FSDP full_tensor only gathers dp_shard."""
+
+    @pytest.mark.parametrize(
+        "name,expected",
+        [
+            ("model.layers.0.mlp.experts.gate_up_proj", True),
+            ("model.layers.0.mlp.experts.down_proj", True),
+            ("model.layers.0.mlp.experts.gate_up_proj_bias", True),
+            ("model.layers.0.mlp.experts.down_proj_bias", True),
+            ("model.layers.0.mlp.experts.up_proj", True),
+            ("model.layers.0.mlp.experts.up_proj_bias", True),
+            (
+                "model.layers.0._checkpoint_wrapped_module.mlp.experts.gate_up_proj",
+                True,
+            ),
+            ("model.layers.0.self_attn.q_proj.weight", False),
+            ("model.layers.0.mlp.router.weight", False),
+            ("model.layers.0.mlp.shared_experts.gate_up_proj", False),
+            ("model.layers.0.mlp.experts.gate_up_proj.lora_A.weight", False),
+            ("model.layers.0.mlp.experts.gate_up_proj.lora_B.weight", False),
+        ],
+    )
+    def test_is_ep_sharded_expert_param(self, name, expected):
+        assert is_ep_sharded_expert_param(name) is expected
+
+    def test_gather_noop_without_group(self):
+        t = torch.arange(6, dtype=torch.float32).view(2, 3)
+        assert gather_expert_full(t, None) is t
+
+    def test_pure_ep_world2_concatenates_dim0(self):
+        results = _spawn_gather_expert_full(world_size=2, ep_size=2, dp_shard_size=1)
+        e_global = 8
+        expected = torch.arange(e_global, dtype=torch.float32).tolist()
+        for rank, ok, dim0, col0 in results:
+            assert ok, (rank, dim0, col0)
+            assert dim0 == e_global
+            assert col0 == expected
+
+    def test_ep_fsdp_world4_each_ep_group_reconstructs(self):
+        """ep=2 × dp=2: each EP group independently concat to E_global; rank 0 (save)
+        is in one of those groups and therefore holds all experts."""
+        results = _spawn_gather_expert_full(world_size=4, ep_size=2, dp_shard_size=2)
+        e_global = 8
+        expected = torch.arange(e_global, dtype=torch.float32).tolist()
+        for rank, ok, dim0, col0 in results:
+            assert ok, (rank, dim0, col0)
+            assert dim0 == e_global
+            assert col0 == expected
+
+
+def _gather_expert_full_worker(rank, world_size, ep_size, dp_shard_size, port, q):
+    os.environ["MASTER_ADDR"] = "127.0.0.1"
+    os.environ["MASTER_PORT"] = str(port)
+    os.environ["RANK"] = str(rank)
+    os.environ["WORLD_SIZE"] = str(world_size)
+    dist.init_process_group(
+        backend="gloo",
+        rank=rank,
+        world_size=world_size,
+        timeout=timedelta(seconds=120),
+    )
+    try:
+        from types import SimpleNamespace
+
+        from axolotl.integrations.expert_parallel.shard import gather_expert_full
+
+        cfg = SimpleNamespace(
+            expert_parallel_size=ep_size,
+            dp_shard_size=dp_shard_size,
+            tensor_parallel_size=1,
+            context_parallel_size=1,
+        )
+        ep_group = ExpertParallelPlugin._resolve_ep_group(cfg)
+        e_global = 8
+        e_local = e_global // ep_size
+        ep_rank = dist.get_rank(ep_group)
+        start = ep_rank * e_local
+        local = (
+            torch.arange(start, start + e_local, dtype=torch.float32)
+            .unsqueeze(1)
+            .expand(e_local, 3)
+            .contiguous()
+        )
+        full = gather_expert_full(local, ep_group)
+        expected = torch.arange(e_global, dtype=torch.float32)
+        ok = full.shape[0] == e_global and torch.equal(full[:, 0], expected)
+        q.put((rank, bool(ok), int(full.shape[0]), full[:, 0].tolist()))
+    finally:
+        dist.destroy_process_group()
+        ExpertParallelPlugin._device_mesh = None
+
+
+def _spawn_gather_expert_full(world_size, ep_size, dp_shard_size):
+    ctx = mp.get_context("spawn")
+    q = ctx.Queue()
+    port = _find_free_port()
+    procs = [
+        ctx.Process(
+            target=_gather_expert_full_worker,
+            args=(r, world_size, ep_size, dp_shard_size, port, q),
+        )
+        for r in range(world_size)
+    ]
+    for p in procs:
+        p.start()
+    results = _collect_worker_results(procs, q, world_size)
+    return sorted(results, key=lambda r: r[0])

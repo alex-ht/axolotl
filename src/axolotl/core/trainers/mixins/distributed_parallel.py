@@ -12,11 +12,16 @@ class DistributedParallelMixin(Trainer):
     """
 
     def _save(self, output_dir: str | None = None, state_dict=None):
-        if (
-            state_dict is None
-            and self.accelerator.parallelism_config
-            and self.accelerator.parallelism_config.dp_shard_enabled
+        if state_dict is None and (
+            (
+                self.accelerator.parallelism_config
+                and self.accelerator.parallelism_config.dp_shard_enabled
+            )
+            or getattr(self.accelerator, "is_fsdp2", False)
         ):
+            # FSDP2 (incl. pure EP, where experts are ignored_params and there is
+            # no dp_shard axis) must go through get_state_dict so DTensors are
+            # full_tensor()'d and EP-sliced experts are concatenated.
             state_dict = self.accelerator.get_state_dict(self.model)
         super()._save(output_dir, state_dict=state_dict)
 

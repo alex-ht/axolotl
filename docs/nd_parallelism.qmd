@@ -47,7 +47,7 @@ Expert Parallelism shards the experts of a Mixture-of-Experts (MoE) model across
 
 - How it works: the EP plugin slices each `Experts` module's `gate_up_proj` (or non-gated `up_proj`) / `down_proj` along the experts dimension and replaces the dispatch/combine path with DeepEP. Each rank sees a different batch (so EP is data-parallel for *data*) but holds different expert shards (model-parallel for *expert weights*). For Nemotron-H LatentMoE the dispatched hidden is `moe_latent_size`, not the expert intermediate.
 - When to use: MoE training where the experts dominate the parameter count and don't fit under FSDP alone, or where you want to compose with FSDP on orthogonal mesh axes.
-- Composes with FSDP: `expert_parallel_size × dp_shard_size = world_size`. EP shards experts on the `ep` axis; FSDP shards non-experts (and the per-EP-slice expert weights) on the `dp_shard` axis. Process groups are disjoint.
+- Composes with FSDP: `expert_parallel_size × dp_shard_size = world_size`. EP shards experts on the `ep` axis; FSDP shards non-experts (and the per-EP-slice expert weights) on the `dp_shard` axis. Process groups are disjoint. A `FULL_STATE_DICT` save all-gathers FSDP shards, then concatenates expert dim 0 across the EP group so the checkpoint holds every expert (not just rank 0's slice).
 - Requires the [DeepEP](https://github.com/deepseek-ai/DeepEP) library (Ampere or Hopper, NVLink). See [Expert Parallelism Integration](custom_integrations.qmd#expert-parallelism-integration) for install + integration details.
 
 ### Hybrid Sharding Data Parallel (HSDP) {#sec-hsdp}

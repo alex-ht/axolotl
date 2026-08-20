@@ -185,6 +185,7 @@ EP composes with FSDP on orthogonal mesh axes: experts are sharded across the `e
 - Models' modeling code must use `@use_experts_implementation` with 3D `gate_up_proj` / `down_proj`, **or** non-gated 3D `up_proj` / `down_proj` (`has_gate=False`, e.g. Nemotron-H LatentMoE). `ModuleList` as used in Mixtral is not supported.
 - Non-gated / LatentMoE experts (Nemotron-3 Super): DeepEP communicates the **moe latent** dim (`up_proj.shape[-1]`, 1024 on Super), not `moe_intermediate_size` (2688, the non-gated `up_proj` width). Use `experts_implementation: grouped_mm` (ScatterMoE / SonicMoE require gated SwiGLU). DeepEP `notify_dispatch` requires `num_experts / expert_parallel_size ≤ 128`, so Super's 512 experts need `expert_parallel_size >= 4`.
 - `num_experts` must be divisible by `expert_parallel_size`.
+- Full-model save (FFT + FSDP2 `FULL_STATE_DICT`): FSDP `full_tensor()` only gathers the `dp_shard` mesh, so expert weights would otherwise stay `[E_local]`. Axolotl's FSDP2 `get_state_dict` all-gathers those tensors on the EP group and concatenates dim 0 back to `E_global` (same axis LoRA already gathered). LoRA adapters still use `save_ep_lora_adapter`.
 - Supported mesh axes: EP, EP × dp_shard, **EP × cp**, EP × cp × dp_shard (experts shard on `ep`,
   the sequence on `cp`, non-expert weights on `dp_shard`). EP × **TP** is not yet supported and
   raises `NotImplementedError`. EP × CP requires the model's attention to be context-parallel-aware
