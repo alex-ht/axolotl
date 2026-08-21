@@ -142,11 +142,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ARG DEEPEP_REF="fix/large-model-int-overflow"
 ARG DEEPEP_TORCH_CUDA_ARCH_LIST="9.0;10.0"
 ARG DEEPEP_MAX_JOBS="16"
+# DeepEP V2 GIN needs NCCL >= 2.30.4 (ncclCommQueryProperties). torch 2.11 and
+# vLLM 0.26 pin nvidia-nccl-cu13==2.28.9; later uv installs can restore that pin.
+ARG NCCL_VERSION="2.30.4"
 
-# DeepEP V2 uses the NCCL Gin backend, which requires NCCL >= 2.30.4.
-# torch 2.11 ships nvidia-nccl-cu13==2.28.9, so we upgrade before building.
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "nvidia-nccl-cu13>=2.30.4"
+    uv pip install --no-deps --reinstall "nvidia-nccl-cu13==${NCCL_VERSION}"
 
 RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
 set -eux
@@ -167,9 +168,7 @@ SHELL
 # --no-deps on sonic-moe; quack 0.6.1 keeps cutlass-dsl==4.6.0.
 ARG SONICMOE_REF="9ffee8b6237a287370c8817ebed86f29e37f68ad"
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    SONICMOE_REF=${SONICMOE_REF} TARGETARCH=${TARGETARCH} \
-    <<'SHELL'
+RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
 set -eux
 if [ "${TARGETARCH}" = "arm64" ]; then
   exit 0
@@ -193,9 +192,7 @@ SHELL
 # unverified, and runtime get_kernel("kernels-community/deep-gemm") hits the Hub.
 ARG DEEPGEMM_REF="559d79fb6994a58b8a15b4b93bf13ccc16edf247"
 
-RUN --mount=type=cache,target=/root/.cache/uv \
-    DEEPGEMM_REF=${DEEPGEMM_REF} TARGETARCH=${TARGETARCH} \
-    <<'SHELL'
+RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
 set -eux
 if [ "${TARGETARCH}" = "arm64" ]; then
   exit 0
@@ -210,6 +207,11 @@ git submodule update --init --recursive --depth 1
 uv pip install --no-build-isolation .
 cd / && rm -rf /tmp/DeepGEMM
 SHELL
+
+# DeepGEMM / torch resolvers can put nvidia-nccl-cu13 back on 2.28.9. Restore
+# the GIN-capable lib so `import deep_ep` does not hit undefined symbols.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --no-deps --reinstall "nvidia-nccl-cu13==${NCCL_VERSION}"
 
 # Fail the build rather than a training run if any of the above moved the pinned
 # HF/torch stack, and confirm Gemma-4 CCE patches plus mamba-ssm are
@@ -234,6 +236,7 @@ assert md.version('deep_ep').startswith('2.1.0'), 'unexpected deep_ep: ' + md.ve
 assert md.version('sonic-moe').startswith('0.1.2'), 'unexpected sonic-moe: ' + md.version('sonic-moe'); \
 assert md.version('quack-kernels').startswith('0.6.1'), 'unexpected quack-kernels: ' + md.version('quack-kernels'); \
 assert md.version('nvidia-cutlass-dsl').startswith('4.6.0'), 'cutlass-dsl moved: ' + md.version('nvidia-cutlass-dsl'); \
+assert tuple(int(x) for x in md.version('nvidia-nccl-cu13').split('.')[:3]) >= (2, 30, 4), 'nccl too old for DeepEP GIN: ' + md.version('nvidia-nccl-cu13'); \
 import deep_ep; \
 assert deep_ep.Buffer is not None; \
 print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| mamba-ssm', md.version('mamba_ssm'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
