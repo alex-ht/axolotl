@@ -14,12 +14,28 @@ def _local_gradient(gradient):
     return gradient.to_local() if isinstance(gradient, DTensor) else gradient
 
 
+def _backend_rejects_cpu_tensors(group=None) -> bool:
+    """True when an all-reduce on ``group`` cannot take a CPU tensor.
+
+    ``dist.get_backend(group) == "nccl"`` is too strict: FSDP2 DeviceMesh groups can
+    report ``cuda:nccl``, mesh tags or ``undefined`` while NCCL still owns the reduce,
+    so a CPU-offloaded scalar would reach NCCL and abort. Only gloo (alone, or as the
+    ``cpu:`` leg of a composite backend) accepts CPU tensors.
+    """
+    if not torch.cuda.is_available():
+        return False
+    backend = str(dist.get_backend(group)).lower()
+    if backend.startswith("gloo") or "cpu:gloo" in backend:
+        return False
+    return True
+
+
 def _all_reduce_scalar(
     value: torch.Tensor, op: dist.ReduceOp, group=None
 ) -> torch.Tensor:
     if not (dist.is_available() and dist.is_initialized()):
         return value
-    if dist.get_backend(group) != "nccl" or value.device.type != "cpu":
+    if value.device.type != "cpu" or not _backend_rejects_cpu_tensors(group):
         dist.all_reduce(value, op=op, group=group)
         return value
     staged = value.to(torch.device("cuda", torch.cuda.current_device()))
