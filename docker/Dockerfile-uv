@@ -16,21 +16,47 @@ WORKDIR /workspace/axolotl
 COPY . .
 
 # If AXOLOTL_EXTRAS is set, append it in brackets; don't install deepspeed with arm64
+# BNB_SKIP_CMAKE: git bitsandbytes needs cmake; skip CUDA ext in this layer.
+# --no-build-isolation does not install PEP 517 build-system requires, so
+# scikit-build-core (bitsandbytes backend) must already be in the venv.
 RUN uv pip uninstall causal_conv1d
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" && \
+    uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" \
+        scikit-build-core "setuptools>=77.0.3" "trove-classifiers>=2025.8.6.13" && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         BASE_EXTRAS="optimizers,ray,modelopt"; \
     else \
         BASE_EXTRAS="deepspeed,optimizers,ray,modelopt"; \
     fi && \
     if [ "$AXOLOTL_EXTRAS" != "" ]; then \
-        uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
     else \
-        uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
     fi && \
     python scripts/cutcrossentropy_install.py --uv | sh && \
     uv pip install pytest
+
+# bitsandbytes CUDA kernels from alex-ht/fix/issue-1785. The axolotl install
+# layer used BNB_SKIP_CMAKE so this is the real GPU build.
+ARG BNB_REF="fix/issue-1785"
+ARG BNB_MAX_JOBS="16"
+
+RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
+set -eux
+if [ "${TARGETARCH}" = "arm64" ]; then
+  exit 0
+fi
+
+uv pip install scikit-build-core cmake ninja
+git clone --depth 1 --branch "${BNB_REF}" \
+    https://github.com/alex-ht/bitsandbytes.git /tmp/bitsandbytes
+cd /tmp/bitsandbytes
+CMAKE_ARGS="-DCOMPUTE_BACKEND=cuda" \
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+MAX_JOBS="${BNB_MAX_JOBS}" \
+  uv pip install --no-build-isolation --no-config --no-deps --reinstall .
+cd / && rm -rf /tmp/bitsandbytes
+SHELL
 
 # fix so that git fetch/pull from remote works with shallow clone
 RUN git config remote.origin.fetch "+refs/heads/*:refs/remotes/origin/*" && \
