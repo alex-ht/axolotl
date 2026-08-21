@@ -31,19 +31,24 @@ COPY . .
 
 # Drop the base image's causal_conv1d (SKIP_CUDA_BUILD / often ABI-mismatched).
 # A real CUDA build is installed in the next layer.
+# BNB_SKIP_CMAKE: pyproject pulls bitsandbytes from git; skip the CUDA ext here
+# and compile it in a dedicated layer below (cmake is not in the base image).
+# --no-build-isolation does not install PEP 517 build-system requires, so
+# scikit-build-core (bitsandbytes backend) must already be in the venv.
 # If AXOLOTL_EXTRAS is set, append it in brackets; don't install deepspeed on arm64.
 RUN uv pip uninstall causal_conv1d
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" && \
+    uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" \
+        scikit-build-core "setuptools>=77.0.3" "trove-classifiers>=2025.8.6.13" && \
     if [ "$TARGETARCH" = "arm64" ]; then \
         BASE_EXTRAS="optimizers,ray,modelopt"; \
     else \
         BASE_EXTRAS="deepspeed,optimizers,ray,modelopt"; \
     fi && \
     if [ "$AXOLOTL_EXTRAS" != "" ]; then \
-        uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
     else \
-        uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
     fi && \
     python scripts/cutcrossentropy_install.py --uv | sh && \
     uv pip install pytest
@@ -74,6 +79,28 @@ cd /tmp/mamba
 MAMBA_FORCE_BUILD=TRUE MAMBA_KEEP_CUDA_BUILD=TRUE MAX_JOBS="${MAMBA_MAX_JOBS}" \
   uv pip install --no-build-isolation --no-config .
 cd / && rm -rf /tmp/mamba
+SHELL
+
+# bitsandbytes CUDA kernels from alex-ht/fix/issue-1785. The axolotl install
+# layer used BNB_SKIP_CMAKE so this is the real GPU build.
+ARG BNB_REF="fix/issue-1785"
+ARG BNB_MAX_JOBS="16"
+
+RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
+set -eux
+if [ "${TARGETARCH}" = "arm64" ]; then
+  exit 0
+fi
+
+uv pip install scikit-build-core cmake ninja
+git clone --depth 1 --branch "${BNB_REF}" \
+    https://github.com/alex-ht/bitsandbytes.git /tmp/bitsandbytes
+cd /tmp/bitsandbytes
+CMAKE_ARGS="-DCOMPUTE_BACKEND=cuda" \
+TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
+MAX_JOBS="${BNB_MAX_JOBS}" \
+  uv pip install --no-build-isolation --no-config --no-deps --reinstall .
+cd / && rm -rf /tmp/bitsandbytes
 SHELL
 
 # vLLM and FA4 resolved together so their shared nvidia-cutlass-dsl pin is reconciled in
@@ -230,6 +257,7 @@ missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unifie
 assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
 absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe', 'deep_gemm') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
+assert md.version('bitsandbytes').startswith('0.50.2'), 'unexpected bitsandbytes: ' + md.version('bitsandbytes'); \
 assert md.version('mamba_ssm').startswith('2.3.2'), 'unexpected mamba-ssm: ' + md.version('mamba_ssm'); \
 assert md.version('causal_conv1d').startswith('1.5.3'), 'unexpected causal-conv1d: ' + md.version('causal_conv1d'); \
 assert md.version('deep_ep').startswith('2.1.0'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
