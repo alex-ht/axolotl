@@ -252,6 +252,26 @@ def _should_use_ep_aware_clip(accelerator, parameters) -> bool:
     return _grads_need_mixed_clip(parameters)
 
 
+def _backend_rejects_cpu_tensors() -> bool:
+    """True when WORLD all_reduce cannot take CPU tensors.
+
+    ``dist.get_backend() == "nccl"`` is too strict: FSDP2 DeviceMesh groups
+    report ``cuda:nccl``, composite backends, mesh tags, or ``undefined``,
+    but NCCL still owns the reduce. Gloo is the CPU-test exception.
+    """
+    import torch
+    import torch.distributed as dist
+
+    if not (dist.is_available() and dist.is_initialized()):
+        return False
+    if not torch.cuda.is_available():
+        return False
+    backend = str(dist.get_backend()).lower()
+    if backend == "gloo" or backend.startswith("gloo"):
+        return False
+    return True
+
+
 def _all_reduce_scalar(acc, op):
     """All-reduce a 0-dim float32 tensor. NCCL cannot take CPU tensors (FSDP2
     ``offload_params`` keeps grads on CPU), so bounce through CUDA in that case."""
@@ -260,9 +280,7 @@ def _all_reduce_scalar(acc, op):
 
     if not (dist.is_available() and dist.is_initialized()):
         return acc
-    if dist.get_backend() == "nccl" and acc.device.type != "cuda":
-        if not torch.cuda.is_available():
-            return acc
+    if acc.device.type != "cuda" and _backend_rejects_cpu_tensors():
         buf = acc.to(device=torch.device("cuda", torch.cuda.current_device()))
         dist.all_reduce(buf, op=op)
         acc.copy_(buf.to(device=acc.device))
@@ -294,12 +312,7 @@ def _ep_aware_clip_grad_norm(parameters, max_norm, norm_type=2.0):
     norm_type = float(norm_type)
     is_inf = math.isinf(norm_type)
     # Scalar accumulator: NCCL all-reduce needs CUDA even when grads are CPU-offloaded.
-    if (
-        dist.is_available()
-        and dist.is_initialized()
-        and dist.get_backend() == "nccl"
-        and torch.cuda.is_available()
-    ):
+    if _backend_rejects_cpu_tensors():
         acc_device = torch.device("cuda", torch.cuda.current_device())
     else:
         acc_device = _grad_to_local(grads[0]).device

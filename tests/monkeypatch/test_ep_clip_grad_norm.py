@@ -12,6 +12,7 @@ import torch.distributed as dist
 
 from axolotl.monkeypatch.accelerate.parallelism_config import (
     _all_reduce_scalar,
+    _backend_rejects_cpu_tensors,
     _dtensor_replicate_scale,
     _ep_aware_clip_grad_norm,
     _grads_need_mixed_clip,
@@ -60,6 +61,85 @@ class TestEpAwareClipPlainTensors:
     def test_cpu_scalar_reduce_noop_without_dist(self):
         acc = torch.tensor(3.0)
         out = _all_reduce_scalar(acc, None)
+        assert out.item() == 3.0
+
+
+def _stub_dist_backend(monkeypatch, backend: str, *, cuda_available: bool = True):
+    monkeypatch.setattr(dist, "is_available", lambda: True)
+    monkeypatch.setattr(dist, "is_initialized", lambda: True)
+    monkeypatch.setattr(dist, "get_backend", lambda *args, **kwargs: backend)
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: cuda_available)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
+
+
+class TestBackendRejectsCpuTensors:
+    def test_gloo_keeps_cpu(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "gloo")
+        assert _backend_rejects_cpu_tensors() is False
+
+    def test_plain_nccl(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "nccl")
+        assert _backend_rejects_cpu_tensors() is True
+
+    def test_cuda_nccl_mesh(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "cuda:nccl")
+        assert _backend_rejects_cpu_tensors() is True
+
+    def test_undefined_mesh_backend(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "undefined")
+        assert _backend_rejects_cpu_tensors() is True
+
+    def test_no_cuda_never_rejects(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "nccl", cuda_available=False)
+        assert _backend_rejects_cpu_tensors() is False
+
+
+class TestAllReduceScalarBounce:
+    def _intercept_cuda_to(self, monkeypatch):
+        orig_to = torch.Tensor.to
+        cuda_to_calls = []
+
+        def wrapped(self, *args, **kwargs):
+            device = kwargs.get("device", args[0] if args else None)
+            if device is not None:
+                dev = (
+                    device if isinstance(device, torch.device) else torch.device(device)
+                )
+                if dev.type == "cuda":
+                    cuda_to_calls.append(dev)
+                    return self.clone()
+            return orig_to(self, *args, **kwargs)
+
+        monkeypatch.setattr(torch.Tensor, "to", wrapped)
+        return cuda_to_calls
+
+    def test_gloo_reduces_cpu_in_place(self, monkeypatch):
+        _stub_dist_backend(monkeypatch, "gloo")
+        seen = []
+
+        def fake_all_reduce(buf, op=None):
+            seen.append(buf.device.type)
+
+        monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
+        acc = torch.tensor(3.0)
+        out = _all_reduce_scalar(acc, None)
+        assert seen == ["cpu"]
+        assert out.item() == 3.0
+
+    @pytest.mark.parametrize("backend", ["nccl", "cuda:nccl", "undefined"])
+    def test_cpu_scalar_bounces_through_cuda(self, monkeypatch, backend):
+        _stub_dist_backend(monkeypatch, backend)
+        cuda_to_calls = self._intercept_cuda_to(monkeypatch)
+        seen = []
+
+        def fake_all_reduce(buf, op=None):
+            seen.append(buf)
+
+        monkeypatch.setattr(dist, "all_reduce", fake_all_reduce)
+        acc = torch.tensor(3.0)
+        out = _all_reduce_scalar(acc, None)
+        assert cuda_to_calls
+        assert len(seen) == 1
         assert out.item() == 3.0
 
 
