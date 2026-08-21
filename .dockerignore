@@ -1,0 +1,33 @@
+# Host venvs. The image runtime is /workspace/axolotl-venv from Dockerfile-uv-base.
+.venv
+venv/
+venv.bak/
+venv3.10/
+env/
+ENV/
+axolotl-venv/
+
+# Bytecode and tool caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Local training / docs artifacts
+outputs/
+last_run_prepared/
+prepared-datasets/
+wandb/
+mlruns/
+lora-out/
+qlora-out/
+_site/
+.quarto/
+
+# IDE
+.vscode/
+.idea/
