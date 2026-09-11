@@ -1,5 +1,7 @@
 """CUDA numerics for fused linear EAFT vs the logits reference."""
 
+import math
+
 import pytest
 import torch
 import torch.nn.functional as F
@@ -9,7 +11,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _ref_eaft_linear(hidden, weight, labels, alpha, k, bias=None, ignore_index=-100):
+def _ref_eaft_linear(
+    hidden, weight, labels, alpha, k, bias=None, ignore_index=-100, normalize=True
+):
     logits = F.linear(
         hidden.float(), weight.float(), None if bias is None else bias.float()
     )
@@ -22,6 +26,8 @@ def _ref_eaft_linear(hidden, weight, labels, alpha, k, bias=None, ignore_index=-
         topk = torch.topk(logits_v[mask], k=k_eff, dim=-1).values
         probs = F.softmax(topk, dim=-1)
         entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+        if normalize and k_eff > 1:
+            entropy = entropy / math.log(k_eff)
         weights = torch.pow(entropy, alpha)
     ce = F.cross_entropy(logits_v[mask], labels_v[mask], reduction="none")
     return (ce * weights).mean()
@@ -30,7 +36,8 @@ def _ref_eaft_linear(hidden, weight, labels, alpha, k, bias=None, ignore_index=-
 class TestFusedLinearEAFT:
     @pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
     @pytest.mark.parametrize("k", [8, 20])
-    def test_loss_and_grads_match_reference(self, dtype, k):
+    @pytest.mark.parametrize("normalize", [True, False])
+    def test_loss_and_grads_match_reference(self, dtype, k, normalize):
         from axolotl.kernels.eaft import fused_linear_eaft_loss
 
         torch.manual_seed(0)
@@ -44,10 +51,22 @@ class TestFusedLinearEAFT:
         weight_ref = weight.detach().clone().requires_grad_(True)
 
         loss = fused_linear_eaft_loss(
-            hidden, weight, labels, alpha=1.0, k=k, ignore_index=-100
+            hidden,
+            weight,
+            labels,
+            alpha=1.0,
+            k=k,
+            ignore_index=-100,
+            normalize=normalize,
         )
         loss_ref = _ref_eaft_linear(
-            hidden_ref, weight_ref, labels, alpha=1.0, k=k, ignore_index=-100
+            hidden_ref,
+            weight_ref,
+            labels,
+            alpha=1.0,
+            k=k,
+            ignore_index=-100,
+            normalize=normalize,
         )
 
         atol = 2e-2 if dtype == torch.bfloat16 else 2e-3

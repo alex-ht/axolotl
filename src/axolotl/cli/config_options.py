@@ -2408,13 +2408,19 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         ("--eaft-alpha",),
         None,
         None,
-        "Exponent for entropy weighting in EAFT (default: 1.0)",
+        "Exponent for entropy weighting in EAFT (paper default: 1.0, linear gating)",
     ),
     (
         ("--eaft-k",),
         None,
         None,
-        "Number of top logits for entropy approximation (default: 20, max 32 for fused EAFT)",
+        "Number of top logits for entropy approximation (paper default: 20, max 32 for fused EAFT)",
+    ),
+    (
+        ("--eaft-normalize/--no-eaft-normalize",),
+        None,
+        None,
+        "Divide top-k entropy by ln(k) so weights are in [0, 1] (paper default: true)",
     ),
     (
         ("--tiled-mlp/--no-tiled-mlp",),

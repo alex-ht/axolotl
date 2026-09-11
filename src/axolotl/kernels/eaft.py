@@ -7,6 +7,8 @@ and applies detached entropy weights to the CE gradient.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -217,12 +219,16 @@ def target_logits(
     return out.float()
 
 
-def entropy_from_topk(topk: torch.Tensor, k: int, alpha: float) -> torch.Tensor:
+def entropy_from_topk(
+    topk: torch.Tensor, k: int, alpha: float, normalize: bool = True
+) -> torch.Tensor:
     """Detached EAFT weights from the largest ``k`` logits (already fp32)."""
     k_eff = min(k, topk.shape[-1])
     chosen = topk[:, :k_eff]
     probs = torch.softmax(chosen, dim=-1)
     entropy = -(probs * torch.log(probs + 1e-10)).sum(dim=-1)
+    if normalize and k_eff > 1:
+        entropy = entropy / math.log(k_eff)
     return torch.pow(entropy, alpha)
 
 
@@ -235,6 +241,7 @@ def fused_linear_eaft_loss(
     bias: torch.Tensor | None = None,
     ignore_index: int = -100,
     num_items_in_batch: int | float | torch.Tensor | None = None,
+    normalize: bool = True,
 ) -> torch.Tensor:
     """EAFT loss from hidden states and ``lm_head`` weights (CUDA)."""
     n_items = num_items_in_batch
@@ -247,6 +254,7 @@ def fused_linear_eaft_loss(
         bias if bias is not None else _empty_bias(weight),
         float(alpha),
         int(k),
+        bool(normalize),
         int(ignore_index),
         n_items,
     )
@@ -264,6 +272,7 @@ class FusedLinearEAFTFunction(torch.autograd.Function):
         bias: torch.Tensor,
         alpha: float,
         k: int,
+        normalize: bool,
         ignore_index: int,
         num_items_in_batch,
     ):
@@ -303,7 +312,7 @@ class FusedLinearEAFTFunction(torch.autograd.Function):
             )
             tgt = target_logits(hidden_v.detach(), weight.detach(), labels_v, bias_arg)
             ce = lse - tgt
-            weights = entropy_from_topk(topk, k_eff, float(alpha))
+            weights = entropy_from_topk(topk, k_eff, float(alpha), bool(normalize))
 
         ctx.save_for_backward(
             hidden_v,
@@ -334,7 +343,7 @@ class FusedLinearEAFTFunction(torch.autograd.Function):
             valid,
         ) = ctx.saved_tensors
         if ctx.n_valid == 0:
-            return None, None, None, None, None, None, None, None
+            return None, None, None, None, None, None, None, None, None
 
         if ctx.num_items_in_batch is not None:
             denom = ctx.num_items_in_batch
@@ -365,4 +374,4 @@ class FusedLinearEAFTFunction(torch.autograd.Function):
 
         if bias.numel() == 0:
             d_bias = None
-        return d_hidden, d_weight, None, d_bias, None, None, None, None
+        return d_hidden, d_weight, None, d_bias, None, None, None, None, None

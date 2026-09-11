@@ -1,8 +1,10 @@
 """CPU tests for the logits-based EAFT reference loss."""
 
+import math
+
 import torch
 
-from axolotl.monkeypatch.loss.eaft import eaft_loss
+from axolotl.monkeypatch.loss.eaft import eaft_entropy_weights, eaft_loss
 
 
 def test_eaft_loss_ignores_masked_tokens():
@@ -32,3 +34,11 @@ def test_eaft_loss_all_ignored_is_zero():
     out.logits = logits
     loss = eaft_loss(out, labels, k=4)
     assert loss.detach().item() == 0.0
+
+
+def test_eaft_entropy_weights_normalize_by_ln_k():
+    uniform = torch.zeros(1, 8)
+    w_norm = eaft_entropy_weights(uniform, k=8, alpha=1.0, normalize=True)
+    w_raw = eaft_entropy_weights(uniform, k=8, alpha=1.0, normalize=False)
+    torch.testing.assert_close(w_norm, torch.ones(1))
+    torch.testing.assert_close(w_raw, torch.full((1,), math.log(8)))

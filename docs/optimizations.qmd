@@ -69,12 +69,13 @@ Reduces VRAM usage by using an optimized cross-entropy loss calculation.
 
 ### Fused linear EAFT
 
-`use_eaft: true` trains with entropy-weighted CE without materializing the full `[tokens, vocab]` logit tensor. An in-tree Triton kernel tiles the lm_head GEMM and keeps a running log-sum-exp plus exact top-k (capped at 32). This is mutually exclusive with CCE, Liger fused/linear CE, and chunked CE — they all own the lm_head+loss path. Other Liger kernels (RoPE, RMSNorm, SwiGLU) can stay on. Requires CUDA.
+`use_eaft: true` trains with entropy-weighted CE without materializing the full `[tokens, vocab]` logit tensor. An in-tree Triton kernel tiles the lm_head GEMM and keeps a running log-sum-exp plus exact top-k (capped at 32). Defaults follow the paper: top-20 entropy, divide by `ln(k)` so weights are in `[0, 1]`, then linear gating (`eaft_alpha: 1.0`). This is mutually exclusive with CCE, Liger fused/linear CE, and chunked CE — they all own the lm_head+loss path. Other Liger kernels (RoPE, RMSNorm, SwiGLU) can stay on. Requires CUDA.
 
 ```yaml
 use_eaft: true
 eaft_alpha: 1.0
 eaft_k: 20
+eaft_normalize: true
 ```
 
 ### Liger Kernels

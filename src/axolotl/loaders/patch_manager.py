@@ -428,6 +428,9 @@ class PatchManager:
             self.cfg.model_config_type,
             alpha=self.cfg.eaft_alpha if self.cfg.eaft_alpha is not None else 1.0,
             k=self.cfg.eaft_k if self.cfg.eaft_k is not None else 20,
+            normalize=(
+                self.cfg.eaft_normalize if self.cfg.eaft_normalize is not None else True
+            ),
         )
 
     def _apply_fsdp_patches(self):

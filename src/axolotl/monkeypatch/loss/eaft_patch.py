@@ -43,6 +43,7 @@ def _eaft_from_lm_head(
     alpha: float,
     k: int,
     num_items_in_batch=None,
+    normalize: bool = True,
 ):
     lm_head = _unwrap_lm_head(lm_head)
     try:
@@ -58,6 +59,7 @@ def _eaft_from_lm_head(
                     alpha,
                     k,
                     num_items_in_batch,
+                    normalize,
                 )
     except ImportError:
         pass
@@ -78,10 +80,11 @@ def _eaft_from_lm_head(
         k=k,
         bias=bias,
         shift=shift,
+        normalize=normalize,
     )
 
 
-def make_eaft_forward(alpha: float, k: int):
+def make_eaft_forward(alpha: float, k: int, normalize: bool = True):
     def eaft_forward(
         self,
         *args,
@@ -146,6 +149,7 @@ def make_eaft_forward(alpha: float, k: int):
                 alpha,
                 k,
                 num_items_in_batch,
+                normalize,
             )
         else:
             logits = self.lm_head(kept_hidden_states)
@@ -172,7 +176,9 @@ def make_eaft_forward(alpha: float, k: int):
     return eaft_forward
 
 
-def patch_eaft_forward(model_type: str, alpha: float = 1.0, k: int = 20) -> None:
+def patch_eaft_forward(
+    model_type: str, alpha: float = 1.0, k: int = 20, normalize: bool = True
+) -> None:
     """Replace ``ForCausalLM.forward`` with a skip-logits EAFT implementation."""
     _, cls_name = get_causal_lm_model_cls_prefix(model_type)
     # ``gemma3_text`` / ``llama4_text`` etc. share a parent modeling module.
@@ -187,10 +193,11 @@ def patch_eaft_forward(model_type: str, alpha: float = 1.0, k: int = 20) -> None
             f"(class {cls_name}): {exc}"
         ) from exc
 
-    model_cls.forward = make_eaft_forward(alpha=alpha, k=k)
+    model_cls.forward = make_eaft_forward(alpha=alpha, k=k, normalize=normalize)
     LOG.info(
-        "Applied fused linear EAFT forward patch to %s (alpha=%s, k=%s)",
+        "Applied fused linear EAFT forward patch to %s (alpha=%s, k=%s, normalize=%s)",
         cls_name,
         alpha,
         k,
+        normalize,
     )
