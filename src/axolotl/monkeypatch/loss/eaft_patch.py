@@ -6,6 +6,7 @@ from typing import Optional, Tuple, Union
 
 import torch
 from transformers.modeling_outputs import CausalLMOutputWithPast
+from transformers.models.auto.configuration_auto import model_type_to_module_name
 
 from axolotl.monkeypatch.loss.eaft import eaft_loss_from_linear
 from axolotl.utils.callbacks.models import get_causal_lm_model_cls_prefix
@@ -174,7 +175,9 @@ def make_eaft_forward(alpha: float, k: int):
 def patch_eaft_forward(model_type: str, alpha: float = 1.0, k: int = 20) -> None:
     """Replace ``ForCausalLM.forward`` with a skip-logits EAFT implementation."""
     _, cls_name = get_causal_lm_model_cls_prefix(model_type)
-    module_path = f"transformers.models.{model_type}.modeling_{model_type}"
+    # ``gemma3_text`` / ``llama4_text`` etc. share a parent modeling module.
+    module_name = model_type_to_module_name(model_type)
+    module_path = f"transformers.models.{module_name}.modeling_{module_name}"
     try:
         module = __import__(module_path, fromlist=[cls_name])
         model_cls = getattr(module, cls_name)
