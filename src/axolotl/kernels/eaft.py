@@ -89,7 +89,8 @@ def _fused_linear_eaft_fwd_kernel(
         m_i = m_new
 
         tile_top = tl.topk(acc, TOPK_K)
-        merged = tl.cat(topk, tile_top, dim=1)
+        # interleave, not cat: older Triton has no cat(dim=) and only 1D cat.
+        merged = tl.interleave(topk, tile_top)
         topk = tl.topk(merged, TOPK_K)
 
     lse = m_i + tl.log(d_i)
