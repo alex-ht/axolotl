@@ -1025,6 +1025,7 @@ class OptimizationValidationMixin:
         - chunked_cross_entropy
         - liger_cross_entropy (LigerPlugin)
         - liger_fused_linear_cross_entropy (LigerPlugin)
+        - use_eaft (owns lm_head + loss; fused linear EAFT)
         """
         ce_options = {
             "cut_cross_entropy": data.get("cut_cross_entropy"),
@@ -1033,6 +1034,7 @@ class OptimizationValidationMixin:
             "liger_fused_linear_cross_entropy": data.get(
                 "liger_fused_linear_cross_entropy"
             ),
+            "use_eaft": data.get("use_eaft"),
         }
 
         enabled_options = [k for k, v in ce_options.items() if v]
@@ -1041,8 +1043,25 @@ class OptimizationValidationMixin:
             raise ValueError(
                 f"Only one cross entropy optimization can be enabled at a time. "
                 f"Found {len(enabled_options)} enabled: {', '.join(enabled_options)}. "
-                "Please disable all but one."
+                "Please disable all but one. EAFT uses a fused lm_head+loss kernel "
+                "and cannot be combined with CCE, Liger CE, or chunked CE. Other "
+                "Liger kernels (rope, rms_norm, glu) remain compatible."
             )
+
+        if data.get("use_eaft"):
+            eaft_k = data.get("eaft_k")
+            if eaft_k is None:
+                eaft_k = 20
+            if eaft_k > 32 or eaft_k < 1:
+                raise ValueError(
+                    "eaft_k must be between 1 and 32 (Triton fused EAFT top-k cap)."
+                )
+            tp = data.get("tensor_parallel_size") or 1
+            if tp > 1:
+                raise ValueError(
+                    "use_eaft is not compatible with tensor parallelism "
+                    "(fused linear EAFT needs the full lm_head)."
+                )
         return data
 
     @model_validator(mode="before")

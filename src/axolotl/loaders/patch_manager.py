@@ -129,6 +129,7 @@ class PatchManager:
         self._apply_flex_attn_kernel_options_patch()
         self._apply_flash_attention_patches()
         self._apply_chunked_cross_entropy_patch()
+        self._apply_eaft_patch()
         self._apply_sageattn_patches()
         self._apply_flash_attn_4_patches()
         self._apply_fsdp_patches()
@@ -411,6 +412,23 @@ class PatchManager:
                 patch_chunked_ce_loss_fn(self.cfg.chunked_cross_entropy_num_chunks)
             else:
                 patch_chunked_ce_loss_fn()
+
+    def _apply_eaft_patch(self):
+        if not self.cfg.use_eaft or self.inference:
+            return
+        if not torch.cuda.is_available():
+            LOG.warning(
+                "use_eaft fused kernel requires CUDA; falling back to logits EAFT "
+                "(higher VRAM). Disable CCE / Liger fused CE when using EAFT."
+            )
+            return
+        from axolotl.monkeypatch.loss.eaft_patch import patch_eaft_forward
+
+        patch_eaft_forward(
+            self.cfg.model_config_type,
+            alpha=self.cfg.eaft_alpha if self.cfg.eaft_alpha is not None else 1.0,
+            k=self.cfg.eaft_k if self.cfg.eaft_k is not None else 20,
+        )
 
     def _apply_fsdp_patches(self):
         """Apply patches for FSDP configurations."""

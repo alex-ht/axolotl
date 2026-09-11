@@ -26,6 +26,9 @@ dataset_prepared_path:
 val_set_size: 0
 output_dir: ./outputs/eaft-gemma-3-1b
 
+# Fused linear EAFT (CUDA): do not enable CCE, liger_cross_entropy,
+# liger_fused_linear_cross_entropy, or chunked_cross_entropy alongside this.
+# liger_rope / liger_rms_norm / liger_glu_activation remain compatible.
 use_eaft: true
 eaft_alpha: 1.0
 eaft_k: 20

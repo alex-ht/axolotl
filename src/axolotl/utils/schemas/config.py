@@ -1015,7 +1015,7 @@ class AxolotlInputConfig(
     eaft_k: int | None = Field(
         default=20,
         json_schema_extra={
-            "description": "Number of top logits for entropy approximation (default: 20)"
+            "description": "Number of top logits for entropy approximation (default: 20, max 32 for fused EAFT)"
         },
     )
 

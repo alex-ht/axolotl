@@ -68,6 +68,42 @@ class TestValidation(BaseValidation):
         assert cfg.train_on_inputs is False
         assert cfg.weight_decay is None
 
+    def test_eaft_conflicts_with_cce(self, minimal_cfg):
+        with pytest.raises(ValueError, match="cross entropy"):
+            validate_config(
+                DictDefault({"use_eaft": True, "cut_cross_entropy": True}) | minimal_cfg
+            )
+
+    def test_eaft_conflicts_with_liger_flce(self, minimal_cfg):
+        with pytest.raises(ValueError, match="cross entropy"):
+            validate_config(
+                DictDefault(
+                    {
+                        "use_eaft": True,
+                        "liger_fused_linear_cross_entropy": True,
+                    }
+                )
+                | minimal_cfg
+            )
+
+    def test_eaft_k_cap(self, minimal_cfg):
+        with pytest.raises(ValueError, match="eaft_k"):
+            validate_config(DictDefault({"use_eaft": True, "eaft_k": 64}) | minimal_cfg)
+
+    def test_eaft_rejects_tensor_parallel(self, minimal_cfg):
+        with pytest.raises(ValueError, match="tensor parallelism"):
+            validate_config(
+                DictDefault({"use_eaft": True, "tensor_parallel_size": 2}) | minimal_cfg
+            )
+
+    def test_eaft_alone_ok(self, minimal_cfg):
+        cfg = validate_config(
+            DictDefault({"use_eaft": True, "eaft_k": 20, "eaft_alpha": 1.0})
+            | minimal_cfg
+        )
+        assert cfg.use_eaft is True
+        assert cfg.eaft_k == 20
+
     def test_zero3_qlora_use_reentrant_false(self, minimal_cfg):
         test_cfg = DictDefault(
             {

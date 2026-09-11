@@ -8,10 +8,17 @@ Reference: https://github.com/ymxyll/LlamaFactory-EAFT/blob/e2ce19e8efcc226450ee
 import torch
 import torch.nn.functional as F
 
+# Must match ``axolotl.kernels.eaft.MAX_K`` (Triton tl.topk power-of-two cap).
+EAFT_MAX_K = 32
+
 
 def eaft_loss(outputs, labels, num_items_in_batch=None, alpha=1.0, k=20):
     """
     compute eaft loss with entropy weighting
+
+    Materializes full logits. CUDA training uses the fused linear kernel
+    instead (see ``fused_linear_eaft_loss``); this remains the numerical
+    reference and the non-CUDA fallback.
 
     args:
         outputs: model outputs containing logits
@@ -30,11 +37,13 @@ def eaft_loss(outputs, labels, num_items_in_batch=None, alpha=1.0, k=20):
     shift_labels_view = shift_labels.view(-1)
 
     mask = shift_labels_view != -100
+    if not mask.any():
+        return shift_logits_view.sum() * 0.0
+
+    k_eff = min(k, vocab_size, EAFT_MAX_K)
 
     with torch.no_grad():
-        top_k_logits, _ = torch.topk(
-            shift_logits_view[mask].float(), k=min(k, vocab_size), dim=-1
-        )
+        top_k_logits, _ = torch.topk(shift_logits_view[mask].float(), k=k_eff, dim=-1)
         top_k_probs = F.softmax(top_k_logits, dim=-1)
         entropy = -(top_k_probs * torch.log(top_k_probs + 1e-10)).sum(dim=-1)
         weights = torch.pow(entropy, alpha)
@@ -49,3 +58,60 @@ def eaft_loss(outputs, labels, num_items_in_batch=None, alpha=1.0, k=20):
         loss = weighted_loss.mean()
 
     return loss
+
+
+def eaft_loss_from_linear(
+    hidden,
+    weight,
+    labels,
+    num_items_in_batch=None,
+    alpha=1.0,
+    k=20,
+    bias=None,
+    ignore_index=-100,
+    shift: bool = True,
+):
+    """EAFT from hidden states + lm_head. CUDA uses the fused kernel."""
+    if shift:
+        hidden = hidden[..., :-1, :].contiguous()
+        labels = labels[..., 1:].contiguous()
+
+    if hidden.is_cuda:
+        from axolotl.kernels.eaft import fused_linear_eaft_loss
+
+        n_items = num_items_in_batch
+        if torch.is_tensor(n_items):
+            n_items = n_items.item()
+        return fused_linear_eaft_loss(
+            hidden,
+            weight,
+            labels,
+            alpha=alpha,
+            k=k,
+            bias=bias,
+            ignore_index=ignore_index,
+            num_items_in_batch=n_items,
+        )
+
+    logits = F.linear(hidden, weight, bias)
+    vocab_size = logits.size(-1)
+    logits_view = logits.reshape(-1, vocab_size)
+    labels_view = labels.reshape(-1)
+    mask = labels_view != ignore_index
+    if not mask.any():
+        return logits_view.sum() * 0.0
+
+    k_eff = min(k, vocab_size, EAFT_MAX_K)
+    with torch.no_grad():
+        top_k_logits, _ = torch.topk(logits_view[mask].float(), k=k_eff, dim=-1)
+        top_k_probs = F.softmax(top_k_logits, dim=-1)
+        entropy = -(top_k_probs * torch.log(top_k_probs + 1e-10)).sum(dim=-1)
+        weights = torch.pow(entropy, alpha)
+
+    per_token_loss = F.cross_entropy(
+        logits_view[mask], labels_view[mask], reduction="none"
+    )
+    weighted_loss = per_token_loss * weights
+    if num_items_in_batch is not None:
+        return weighted_loss.sum() / num_items_in_batch
+    return weighted_loss.mean()

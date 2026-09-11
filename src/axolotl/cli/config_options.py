@@ -2255,6 +2255,12 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         None,
     ),
     (
+        ("--flex-attn-kernel-options",),
+        None,
+        None,
+        "Override Triton's autotuned kernel_options (BLOCK_M, BLOCK_N, num_stages, num_warps, ...) for every flex_attention call. Workaround for H100 Triton shared-memory OOM on some shapes: the autotuned config can exceed the 232KB per-SM limit, and smaller blocks (e.g. BLOCK_M: 16, BLOCK_N: 16, num_stages: 1, num_warps: 4) trade some throughput to fit. Requires attn_implementation: flex_attention.",
+    ),
+    (
         ("--flash-attention/--no-flash-attention",),
         None,
         None,
@@ -2300,7 +2306,7 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         ("--gemma4-hybrid-attn-impl/--no-gemma4-hybrid-attn-impl",),
         None,
         None,
-        "Use hybrid attention for Gemma 4: flash_attention_2 for sliding window layers and sdpa for global (full_attention) layers. Global layers have head_dim=512 which exceeds flash attention's supported size.",
+        "Use hybrid attention for Gemma 4: flash_attention_2, flash_attention_4, or flex_attention for sliding window layers, and sdpa for global (full_attention) layers. Global layers have head_dim=512 which exceeds the flash backends' supported size.",
     ),
     (
         ("--large-head-attention",),
@@ -2408,7 +2414,7 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         ("--eaft-k",),
         None,
         None,
-        "Number of top logits for entropy approximation (default: 20)",
+        "Number of top logits for entropy approximation (default: 20, max 32 for fused EAFT)",
     ),
     (
         ("--tiled-mlp/--no-tiled-mlp",),
