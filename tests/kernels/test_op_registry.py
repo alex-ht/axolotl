@@ -55,6 +55,12 @@ class TestOpsRegistered:
         assert torch.ops.axolotl.ebft_fused_cosine_similarity is not None
         assert torch.ops.axolotl.ebft_fused_diversity_penalty is not None
 
+    def test_eaft_ops_exist(self):
+        import axolotl.kernels.eaft  # noqa: F401
+
+        assert torch.ops.axolotl.fused_linear_eaft_fwd is not None
+        assert torch.ops.axolotl.fused_linear_eaft_bwd is not None
+
 
 class TestDispatchVisibility:
     @requires_cuda

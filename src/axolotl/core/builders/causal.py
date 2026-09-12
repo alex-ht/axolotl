@@ -394,16 +394,26 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
             data_collator_kwargs["pad_to_multiple_of"] = multiple
 
         if self.cfg.use_eaft:
-            from functools import partial
+            import torch as _torch
 
-            from axolotl.monkeypatch.loss.eaft import eaft_loss
+            if not _torch.cuda.is_available():
+                from functools import partial
 
-            configured_eaft_loss = partial(
-                eaft_loss,
-                alpha=self.cfg.eaft_alpha if self.cfg.eaft_alpha is not None else 1.0,
-                k=self.cfg.eaft_k if self.cfg.eaft_k is not None else 20,
-            )
-            trainer_kwargs["compute_loss_func"] = configured_eaft_loss
+                from axolotl.monkeypatch.loss.eaft import eaft_loss
+
+                configured_eaft_loss = partial(
+                    eaft_loss,
+                    alpha=self.cfg.eaft_alpha
+                    if self.cfg.eaft_alpha is not None
+                    else 1.0,
+                    k=self.cfg.eaft_k if self.cfg.eaft_k is not None else 20,
+                    normalize=(
+                        self.cfg.eaft_normalize
+                        if self.cfg.eaft_normalize is not None
+                        else True
+                    ),
+                )
+                trainer_kwargs["compute_loss_func"] = configured_eaft_loss
 
         trainer_cls = self._get_trainer_cls()
 

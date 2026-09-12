@@ -1009,13 +1009,19 @@ class AxolotlInputConfig(
     eaft_alpha: float | None = Field(
         default=1.0,
         json_schema_extra={
-            "description": "Exponent for entropy weighting in EAFT (default: 1.0)"
+            "description": "Exponent for entropy weighting in EAFT (paper default: 1.0, linear gating)"
         },
     )
     eaft_k: int | None = Field(
         default=20,
         json_schema_extra={
-            "description": "Number of top logits for entropy approximation (default: 20)"
+            "description": "Number of top logits for entropy approximation (paper default: 20, max 32 for fused EAFT)"
+        },
+    )
+    eaft_normalize: bool | None = Field(
+        default=True,
+        json_schema_extra={
+            "description": "Divide top-k entropy by ln(k) so weights are in [0, 1] (paper default: true)"
         },
     )
 
