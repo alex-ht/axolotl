@@ -65,7 +65,8 @@ def _eaft_from_lm_head(
         pass
 
     weight = _full_tensor(lm_head.weight)
-    bias = lm_head.bias
+    # PEFT TrainableTokensWrapper only forwards `.weight`; `.bias` raises AttributeError.
+    bias = getattr(lm_head, "bias", None)
     if bias is not None:
         bias = _full_tensor(bias)
 
