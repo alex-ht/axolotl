@@ -1,0 +1,141 @@
+# syntax=docker/dockerfile:1
+# Air-gapped Llama-4 training image: axolotl v0.13.1 + transformers 4.57.6.
+#
+# Build (ONLINE machine), context = docker/llama4-offline:
+#   docker build -f docker/Dockerfile-llama4-offline -t axolotl-llama4-offline:0.13.1 docker/llama4-offline
+#
+# Why v0.13.1: it is the last axolotl release on transformers v4 (pins
+# transformers==4.57.6, accelerate 1.12.0, peft 0.18.1, trl 0.25.1,
+# liger-kernel 0.6.4, bitsandbytes 0.49.1, torchao 0.13.0, deepspeed==0.18.2).
+# v0.14.0+ (and this fork's HEAD, 0.19.0.dev0) require transformers 5.x.
+# The fork's Llama-4 code (monkeypatch/models/llama4, cli/delinearize_llama4,
+# examples/llama-4) is byte-identical at tag v0.13.1 vs HEAD, and the official
+# image ships /workspace/axolotl at exactly commit 6e42def (= tag v0.13.1).
+#
+# Base: axolotlai/axolotl:0.13.1 == py3.11 / CUDA 12.8 / torch 2.9.0+cu128,
+# flash-attn 2.8.3 (prebuilt for torch 2.9), ring-flash-attn 0.1.8, xformers.
+# Pinned by digest so a re-push of the tag cannot change ABI under us.
+ARG BASE_IMAGE=axolotlai/axolotl:0.13.1@sha256:f6420b463f1c27b199c5e885219d501133991805f2dd58609c08d651c41b91d7
+
+############################ builder ############################
+FROM ${BASE_IMAGE} AS builder
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Hopper, datacenter Blackwell, RTX Blackwell (+PTX). sm_80 (A100) dropped; add "8.0" if needed.
+# CUDA 12.8 supports up to sm_120.
+ARG TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
+ARG MAX_JOBS=16
+# v0.13.1 setup.py pins the extra to deepspeed==0.18.2
+ARG DEEPSPEED_VERSION=0.18.2
+# axolotl-pinned CCE fork commit for v0.13.1 (scripts/cutcrossentropy_install.py)
+ARG CCE_REF=318b7e2
+# "pypi" = bitsandbytes 0.49.1 (v0.13.1 pin, prebuilt CUDA libs incl. sm_120)
+# or a git ref of alex-ht/bitsandbytes to compile instead (e.g. fix/issue-1785)
+ARG BNB_SOURCE=pypi
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST} MAX_JOBS=${MAX_JOBS} PIP_NO_CACHE_DIR=1
+
+WORKDIR /build
+RUN mkdir -p /wheelhouse && pip freeze > /build/base-freeze.txt
+
+# DeepSpeed with every op a training run can touch PREBUILT (no JIT => no
+# ninja/nvcc compile and no surprise at runtime on the air-gapped node).
+RUN DS_BUILD_CPU_ADAM=1 DS_BUILD_FUSED_ADAM=1 DS_BUILD_AIO=1 DS_BUILD_UTILS=1 \
+    pip wheel --no-deps --no-build-isolation --no-binary deepspeed \
+        -w /wheelhouse "deepspeed==${DEEPSPEED_VERSION}"
+
+# Cut Cross Entropy, axolotl fork (has the llama4 / llama4_text patch).
+RUN pip wheel --no-deps -w /wheelhouse \
+    "cut-cross-entropy[transformers] @ git+https://github.com/axolotl-ai-cloud/ml-cross-entropy.git@${CCE_REF}"
+
+# Optional: user's bitsandbytes fork compiled for TORCH_CUDA_ARCH_LIST.
+RUN if [ "${BNB_SOURCE}" != "pypi" ]; then \
+      pip install scikit-build-core cmake && \
+      git clone --depth 1 --branch "${BNB_SOURCE}" https://github.com/alex-ht/bitsandbytes.git /build/bnb && \
+      cd /build/bnb && CMAKE_ARGS="-DCOMPUTE_BACKEND=cuda" \
+      pip wheel --no-deps --no-build-isolation -w /wheelhouse . ; \
+    fi
+
+# axolotl itself as a regular (non-editable) wheel from the image's v0.13.1 tree.
+# Optional small patches: drop *.patch into docker/llama4-offline/patches/.
+COPY patches/ /build/patches/
+RUN cp -a /workspace/axolotl /build/axolotl && cd /build/axolotl && \
+    test "$(git rev-parse --short=7 HEAD)" = "6e42def" && \
+    for p in /build/patches/*.patch; do [ -e "$p" ] || continue; echo "applying $p"; git apply "$p"; done && \
+    pip wheel --no-deps --no-build-isolation -w /wheelhouse .
+
+# Offline wheelhouse for every other pure/compiled dep in the env, so the image
+# can rebuild/repair itself with `pip install --no-index`. Huge CUDA runtime
+# wheels (torch, nvidia-*, triton, xformers, flash-attn) stay in site-packages
+# only -- re-downloading them would add ~6 GB for no runtime benefit.
+RUN grep -viE '^(torch|torchvision|torchaudio|nvidia-|triton|xformers|flash.attn|axolotl|deepspeed|cut.cross.entropy|bitsandbytes)([=@ ]|-)' /build/base-freeze.txt \
+      | grep -v ' @ ' | grep '==' > /build/rest.txt && \
+    { [ "${BNB_SOURCE}" != "pypi" ] || echo "bitsandbytes==0.49.1" >> /build/rest.txt; } && \
+    while read -r req; do \
+      pip download -q --no-deps --only-binary=:all: -d /wheelhouse "$req" \
+        || pip wheel -q --no-deps -w /wheelhouse "$req" \
+        || echo "WARN: no wheel for $req" | tee -a /wheelhouse/MISSING.txt; \
+    done < /build/rest.txt && \
+    ls /wheelhouse | wc -l
+
+############################ final ############################
+FROM ${BASE_IMAGE}
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
+ENV TORCH_CUDA_ARCH_LIST=${TORCH_CUDA_ARCH_LIST}
+
+COPY --from=builder /wheelhouse /opt/wheelhouse
+
+# Everything below installs from the local wheelhouse ONLY.
+RUN pip install --no-index --find-links /opt/wheelhouse --no-deps --force-reinstall \
+        "$(ls /opt/wheelhouse/deepspeed-*.whl)" \
+        "$(ls /opt/wheelhouse/cut_cross_entropy-*.whl)" \
+        "$(ls /opt/wheelhouse/axolotl-*.whl)" && \
+    pip install --no-index --find-links /opt/wheelhouse --no-deps --force-reinstall /opt/wheelhouse/bitsandbytes-*.whl && \
+    rm -rf /root/.cache/pip && \
+    # prove dependency resolution works with no index at all
+    pip install --no-index --find-links /opt/wheelhouse --dry-run \
+        "axolotl[deepspeed,flash-attn,ring-flash-attn]" "transformers==4.57.6" && \
+    python -c "import deepspeed, axolotl, cut_cross_entropy; from deepspeed.git_version_info import installed_ops as o; on=[k for k,v in o.items() if v]; assert 'cpu_adam' in on and 'fused_adam' in on, on; print('prebuilt ds ops:', on)"
+
+# ---- offline runtime ---------------------------------------------------------
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1 \
+    HF_HUB_DISABLE_TELEMETRY=1 \
+    HF_HUB_DISABLE_UPDATE_CHECK=1 \
+    HF_HUB_DISABLE_IMPLICIT_TOKEN=1 \
+    HF_HOME=/root/.cache/huggingface \
+    WANDB_MODE=offline \
+    WANDB_DISABLED=true \
+    DO_NOT_TRACK=1 \
+    AXOLOTL_DO_NOT_TRACK=1 \
+    DISABLE_MLFLOW_INTEGRATION=TRUE \
+    GRADIO_ANALYTICS_ENABLED=False \
+    RAY_USAGE_STATS_ENABLED=0 \
+    PIP_NO_INDEX=1 \
+    PIP_FIND_LINKS=/opt/wheelhouse \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    DS_SKIP_CUDA_CHECK=0 \
+    TRITON_CACHE_DIR=/root/.triton/cache \
+    TORCHINDUCTOR_CACHE_DIR=/root/.cache/torchinductor \
+    LLAMA4_EXPECT_TRANSFORMERS=4.57.6
+
+# Accelerate default config so `accelerate launch` never prompts.
+RUN mkdir -p /models /data /outputs /root/.triton/cache /root/.cache/torchinductor /root/.cache/huggingface/accelerate /etc/axolotl-llama4 && \
+    python -c "from accelerate.utils import write_basic_config; write_basic_config(mixed_precision='bf16')"
+
+COPY configs/ /workspace/llama4-configs/
+COPY llama4-offline-check /usr/local/bin/llama4-offline-check
+COPY README.md /workspace/llama4-configs/README.md
+RUN chmod +x /usr/local/bin/llama4-offline-check
+
+# Optional: bake ONLY tokenizer/config files (never weights). Put them in
+# docker/llama4-offline/tokenizer/ before building; empty dir = nothing baked.
+COPY tokenizer/ /opt/llama4-tokenizer/
+
+LABEL org.opencontainers.image.title="axolotl-llama4-offline" \
+      org.opencontainers.image.description="axolotl v0.13.1 + transformers 4.57.6 for air-gapped Llama-4 training" \
+      axolotl.version="0.13.1" transformers.version="4.57.6"
+
+VOLUME ["/models", "/data", "/outputs"]
+WORKDIR /workspace
