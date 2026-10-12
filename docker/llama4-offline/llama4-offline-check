@@ -1,0 +1,220 @@
+#!/usr/bin/env python
+"""Offline self-check for the Llama-4 axolotl image.
+
+Run with networking disabled:
+  docker run --rm --gpus all --network none <image> llama4-offline-check
+Exit code 0 = every required check passed.
+"""
+import importlib
+import importlib.metadata as md
+import os
+import socket
+import subprocess
+import sys
+import traceback
+
+RESULTS = []
+
+
+def check(name, required=True):
+    def deco(fn):
+        try:
+            detail = fn() or ""
+            RESULTS.append((name, "PASS", detail, required))
+        except Exception as exc:  # noqa: BLE001
+            status = "FAIL" if required else "WARN"
+            RESULTS.append((name, status, f"{type(exc).__name__}: {exc}", required))
+            if os.environ.get("CHECK_VERBOSE"):
+                traceback.print_exc()
+        return fn
+    return deco
+
+
+@check("network is really off (informational)", required=False)
+def _net():
+    try:
+        socket.create_connection(("huggingface.co", 443), timeout=3).close()
+    except OSError:
+        return "no outbound connectivity (good)"
+    raise RuntimeError("outbound network reachable -- run with --network none for a real test")
+
+
+@check("offline env vars")
+def _env():
+    need = {"HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1", "HF_DATASETS_OFFLINE": "1",
+            "AXOLOTL_DO_NOT_TRACK": "1", "DO_NOT_TRACK": "1"}
+    bad = {k: os.environ.get(k) for k, v in need.items() if os.environ.get(k) != v}
+    assert not bad, bad
+    return "ok"
+
+
+@check("versions")
+def _versions():
+    import torch
+    want_tf = os.environ.get("LLAMA4_EXPECT_TRANSFORMERS", "4.57.6")
+    tf = md.version("transformers")
+    assert tf == want_tf, f"transformers {tf} != {want_tf}"
+    pk = {p: md.version(p) for p in ("axolotl", "accelerate", "peft", "trl", "bitsandbytes",
+                                     "liger-kernel", "torchao", "deepspeed", "cut-cross-entropy")}
+    return f"torch {torch.__version__} cuda {torch.version.cuda} | transformers {tf} | " + \
+        ", ".join(f"{k} {v}" for k, v in pk.items())
+
+
+@check("transformers Llama4 classes")
+def _llama4():
+    from transformers import Llama4Config, Llama4ForCausalLM, Llama4ForConditionalGeneration  # noqa: F401
+    from transformers.models.llama4 import modeling_llama4  # noqa: F401
+    return "ok"
+
+
+@check("axolotl llama4 modules")
+def _axo():
+    for m in ("axolotl.monkeypatch.models.llama4.modeling", "axolotl.cli.delinearize_llama4",
+              "axolotl.monkeypatch.lora_kernels", "axolotl.monkeypatch.multipack",
+              "axolotl.integrations.cut_cross_entropy", "axolotl.integrations.liger",
+              "axolotl.loaders.patch_manager"):
+        importlib.import_module(m)
+    from axolotl.monkeypatch.multipack import SUPPORTED_MULTIPACK_MODEL_TYPES
+    assert "llama4" in SUPPORTED_MULTIPACK_MODEL_TYPES
+    return "ok (multipack supports llama4)"
+
+
+@check("cut_cross_entropy (axolotl fork, llama4 patch)")
+def _cce():
+    from cut_cross_entropy import linear_cross_entropy  # noqa: F401
+    from cut_cross_entropy.transformers.patch import PATCH_FNS
+    assert "llama4" in PATCH_FNS, sorted(PATCH_FNS)[:10]
+    return "llama4 in PATCH_FNS"
+
+
+@check("liger_kernel")
+def _liger():
+    from liger_kernel.transformers import LigerRMSNorm, LigerSwiGLUMLP  # noqa: F401
+    from liger_kernel.transformers.functional import liger_cross_entropy  # noqa: F401
+    return md.version("liger-kernel")
+
+
+@check("torchao (fp8 / low-bit optim)")
+def _torchao():
+    import torchao  # noqa: F401
+    from torchao.float8 import convert_to_float8_training  # noqa: F401
+    from torchao.optim import AdamW4bit, AdamW8bit  # noqa: F401
+    return md.version("torchao")
+
+
+@check("flex_attention")
+def _flex():
+    from torch.nn.attention.flex_attention import flex_attention  # noqa: F401
+    return "ok"
+
+
+@check("flash_attn (FA2)", required=False)
+def _fa():
+    import flash_attn
+    from flash_attn import flash_attn_func  # noqa: F401
+    return flash_attn.__version__
+
+
+@check("ring_flash_attn (sequence parallel)", required=False)
+def _ring():
+    import ring_flash_attn  # noqa: F401
+    return md.version("ring-flash-attn")
+
+
+@check("deepspeed prebuilt ops")
+def _ds():
+    import deepspeed  # noqa: F401
+    from deepspeed.ops.op_builder import CPUAdamBuilder, FusedAdamBuilder
+    built = []
+    for b in (CPUAdamBuilder(), FusedAdamBuilder()):
+        b.load(verbose=False)  # prebuilt -> no JIT; JIT would need ninja + time
+        built.append(b.name)
+    import deepspeed.ops.adam.cpu_adam  # noqa: F401
+    from deepspeed.git_version_info import installed_ops
+    on = sorted(k for k, v in installed_ops.items() if v)
+    assert "cpu_adam" in on and "fused_adam" in on, on
+    return "prebuilt: " + ",".join(on)
+
+
+@check("bitsandbytes CUDA")
+def _bnb():
+    import torch
+    import bitsandbytes as bnb
+    if not torch.cuda.is_available():
+        return "no GPU: import only"
+    w = torch.randn(256, 256, device="cuda", dtype=torch.bfloat16)
+    q, st = bnb.functional.quantize_4bit(w, quant_type="nf4")
+    d = bnb.functional.dequantize_4bit(q, st)
+    assert (d - w).abs().mean() < 0.2
+    return f"{md.version('bitsandbytes')} nf4 roundtrip ok"
+
+
+@check("axolotl --help")
+def _cli():
+    out = subprocess.run(["axolotl", "--help"], capture_output=True, text=True, timeout=180)
+    assert out.returncode == 0, out.stderr[-500:]
+    assert "delinearize-llama4" in out.stdout, "delinearize-llama4 not in CLI"
+    return "ok (delinearize-llama4 present)"
+
+
+@check("tiny Llama4 fwd/bwd (CCE + Liger + flex/sdpa)")
+def _tiny():
+    import torch
+    from transformers import Llama4TextConfig, Llama4ForCausalLM
+    dev = "cuda" if torch.cuda.is_available() else "cpu"
+    cfg = Llama4TextConfig(vocab_size=2048, hidden_size=256, intermediate_size=256,
+                           intermediate_size_mlp=512, num_hidden_layers=2,
+                           num_attention_heads=4, num_key_value_heads=2, head_dim=64,
+                           num_local_experts=4, num_experts_per_tok=1,
+                           interleave_moe_layer_step=1, max_position_embeddings=512,
+                           attention_chunk_size=128, no_rope_layers=[1, 0])
+    notes = []
+    if dev == "cuda":
+        from liger_kernel.transformers import apply_liger_kernel_to_llama4
+        apply_liger_kernel_to_llama4(rms_norm=True, swiglu=True, cross_entropy=False,
+                                     fused_linear_cross_entropy=False)
+        notes.append("liger")
+        from cut_cross_entropy.transformers import cce_patch
+        cfg._attn_implementation = "sdpa"
+    model = Llama4ForCausalLM(cfg).to(dev, torch.bfloat16 if dev == "cuda" else torch.float32)
+    if dev == "cuda":
+        model = cce_patch(model)
+        notes.append("cce")
+    ids = torch.randint(0, cfg.vocab_size, (2, 128), device=dev)
+    loss = model(input_ids=ids, labels=ids).loss
+    loss.backward()
+    g = sum(p.grad.float().norm().item() for p in model.parameters() if p.grad is not None)
+    assert torch.isfinite(loss) and g > 0
+    # linearized experts monkeypatch round trip
+    from axolotl.monkeypatch.models.llama4.modeling import patch_llama4_linearized_modeling
+    from transformers.models.llama4 import modeling_llama4
+    from axolotl.monkeypatch.models.llama4.modeling import Llama4TextExperts as LinExperts
+    unpatch = patch_llama4_linearized_modeling()
+    try:
+        assert modeling_llama4.Llama4TextExperts is LinExperts
+        ex = LinExperts(cfg).to(dev)
+        assert len(ex.gate_projs) == cfg.num_local_experts
+        x = torch.randn(cfg.num_local_experts * 8, cfg.hidden_size, device=dev)
+        ex(x).float().sum().backward()
+    finally:
+        if callable(unpatch):
+            unpatch()
+    if dev == "cuda":
+        from torch.nn.attention.flex_attention import flex_attention
+        q = torch.randn(1, 4, 128, 64, device=dev, dtype=torch.bfloat16)
+        torch.compile(flex_attention)(q, q, q).sum()
+        notes.append("flex(compiled)")
+    return f"{dev} loss={loss.item():.3f} [{'+'.join(notes)}] linearized-experts ok"
+
+
+def main():
+    w = max(len(r[0]) for r in RESULTS)
+    for name, st, detail, _ in RESULTS:
+        print(f"[{st}] {name.ljust(w)}  {detail}")
+    failed = [r for r in RESULTS if r[1] == "FAIL"]
+    print(f"\n{len(RESULTS) - len(failed)}/{len(RESULTS)} ok, {len(failed)} required failure(s)")
+    sys.exit(1 if failed else 0)
+
+
+if __name__ == "__main__":
+    main()
