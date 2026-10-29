@@ -44,11 +44,11 @@ The sonic-moe kernel ships as the pip package [`sonic-moe`](https://github.com/D
 Install from GitHub rather than current PyPI metadata (PyPI `0.1.2.post1` still pins `torch<=2.9.1` and `nvidia-cutlass-dsl==4.4.2`):
 
 ```bash
-uv pip install --no-deps "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@9ffee8b6237a287370c8817ebed86f29e37f68ad"
-uv pip install kernels "quack-kernels==0.6.1" "nvidia-cutlass-dsl==4.6.0" "apache-tvm-ffi>=0.1.10,<0.2"
+uv pip install --no-deps "sonic-moe @ git+https://github.com/Dao-AILab/sonic-moe.git@7396f3e604827d8186c2e16e64b28ee33d3defd0"
+uv pip install kernels "quack-kernels[cu13]==0.6.5" "nvidia-cutlass-dsl[cu13]==4.7.1" "apache-tvm-ffi>=0.1.11,<0.2"
 ```
 
-`apache-tvm-ffi` is an undeclared runtime dependency of `nvidia-cutlass-dsl` 4.6.0 (absent from its `Requires-Dist`, so pip will not pull it); `<0.1.10` breaks `cute.compile`, so pin it explicitly.
+`apache-tvm-ffi` is an undeclared runtime dependency of `nvidia-cutlass-dsl` (4.6.0 and later) (absent from its `Requires-Dist`, so pip will not pull it); `<0.1.10` breaks `cute.compile`, so pin it explicitly.
 
 **Note:** Blackwell support is in upstream beta. On Blackwell GPUs Axolotl automatically sets `USE_QUACK_GEMM=1` to enable the Blackwell kernels.
 

@@ -6,19 +6,29 @@
 # axolotl-uv image, so only one base has to be published. The two install blocks
 # must be kept in sync -- if you change Dockerfile-uv's extras, CCE step or vLLM/FA4
 # pins, mirror it here.
-ARG BASE_IMAGE=alexht/axolotl-base-uv
-ARG BASE_TAG=20260804
+# Upstream base (CUDA 13.0.3, py3.12, torch 2.13.0 cu130), same tag upstream CI
+# uses (cicd/single_gpu.py, cicd/multigpu.py). torch 2.13.0 rather than 2.14.1
+# because vLLM 0.30.0 pins torch==2.13.0. `main-base-*` tags move; for a
+# reproducible build pass BASE_TAG=main-base-py3.12-cu130-2.13.0@sha256:<digest>
+# (2026-10-25 manifest list: sha256:2a065dc4cef475d664ecace421e4909207e753186f5fe968e1cfc57b0443af87).
+ARG BASE_IMAGE=axolotlai/axolotl-base-uv
+ARG BASE_TAG=main-base-py3.12-cu130-2.13.0
 FROM $BASE_IMAGE:$BASE_TAG
 
 ARG TORCH_CUDA_ARCH_LIST="9.0 10.0 12.0+PTX"
 ARG AXOLOTL_EXTRAS=""
 ARG AXOLOTL_ARGS=""
 ARG CUDA="130"
-ARG PYTORCH_VERSION="2.11.0"
+ARG PYTORCH_VERSION="2.13.0"
 ARG TORCH_BACKEND="cu130"
-ARG VLLM_VERSION="0.26.0"
-# b20+ hard-pin nvidia-cutlass-dsl==4.6.0.dev0, which collides with vllm's ==4.6.0
-ARG FLASH_ATTN_4_VERSION="4.0.0b19"
+# vLLM 0.30.0 is the newest release that accepts transformers 5.20.1 (0.31.0 pins
+# transformers<5.18.0, 0.32.0 <5.20.0). It pins torch==2.13.0,
+# nvidia-cutlass-dsl[cu13]==4.7.1 and quack-kernels==0.6.5.
+ARG VLLM_VERSION="0.30.0"
+# Same FA4 as the v0.21.1 `blackwell` extra; needs cutlass-dsl>=4.6.2, quack>=0.5.3.
+ARG FLASH_ATTN_4_VERSION="4.0.0b35"
+ARG CUTLASS_DSL_VERSION="4.7.1"
+ARG QUACK_VERSION="0.6.5"
 ARG TARGETARCH
 
 ENV PYTORCH_VERSION=$PYTORCH_VERSION
@@ -41,14 +51,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv pip install "huggingface_hub>=1.5.0" "httpx<1" "kernels-data" \
         scikit-build-core "setuptools>=77.0.3" "trove-classifiers>=2025.8.6.13" && \
     if [ "$TARGETARCH" = "arm64" ]; then \
-        BASE_EXTRAS="optimizers,ray,modelopt"; \
+        BASE_EXTRAS="optimizers,ray,ringmaster,modelopt"; \
     else \
-        BASE_EXTRAS="deepspeed,optimizers,ray,modelopt"; \
+        BASE_EXTRAS="deepspeed,optimizers,ray,fla,ringmaster,modelopt"; \
     fi && \
+    TORCH_PIN="torch==$(python -c 'import torch; print(torch.__version__)')" && \
     if [ "$AXOLOTL_EXTRAS" != "" ]; then \
-        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS,$AXOLOTL_EXTRAS] "$TORCH_PIN" $AXOLOTL_ARGS; \
     else \
-        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS] $AXOLOTL_ARGS; \
+        BNB_SKIP_CMAKE=TRUE uv pip install --no-build-isolation -e .[$BASE_EXTRAS] "$TORCH_PIN" $AXOLOTL_ARGS; \
     fi && \
     python scripts/cutcrossentropy_install.py --uv | sh && \
     uv pip install pytest
@@ -81,9 +92,10 @@ MAMBA_FORCE_BUILD=TRUE MAMBA_KEEP_CUDA_BUILD=TRUE MAX_JOBS="${MAMBA_MAX_JOBS}" \
 cd / && rm -rf /tmp/mamba
 SHELL
 
-# bitsandbytes CUDA kernels from alex-ht/fix/issue-1785. The axolotl install
-# layer used BNB_SKIP_CMAKE so this is the real GPU build.
-ARG BNB_REF="fix/issue-1785"
+# bitsandbytes CUDA kernels from alex-ht/fix/issue-1785 (#1785 int64 indexing, not in
+# upstream 0.50.2). The axolotl install layer used BNB_SKIP_CMAKE so this is the real
+# GPU build. Pinned to the branch head commit for reproducibility.
+ARG BNB_REF="d8860cd35e1efdd161b8dc3b4ee58dd3cfa253df"
 ARG BNB_MAX_JOBS="16"
 
 RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
@@ -93,9 +105,11 @@ if [ "${TARGETARCH}" = "arm64" ]; then
 fi
 
 uv pip install scikit-build-core cmake ninja
-git clone --depth 1 --branch "${BNB_REF}" \
-    https://github.com/alex-ht/bitsandbytes.git /tmp/bitsandbytes
+git init /tmp/bitsandbytes
 cd /tmp/bitsandbytes
+git remote add origin https://github.com/alex-ht/bitsandbytes.git
+git fetch --depth 1 origin "${BNB_REF}"
+git checkout FETCH_HEAD
 CMAKE_ARGS="-DCOMPUTE_BACKEND=cuda" \
 TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST}" \
 MAX_JOBS="${BNB_MAX_JOBS}" \
@@ -105,12 +119,16 @@ SHELL
 
 # vLLM and FA4 resolved together so their shared nvidia-cutlass-dsl pin is reconciled in
 # one pass. FA4 is a pure-Python wheel (CuTe DSL, JIT at runtime), so nothing compiles here
-# and FA2 is deliberately absent -- it is sdist-only and has no prebuilt wheel for torch 2.11.
-# xformers is pinned because only 0.0.35 relaxed its exact torch pin.
+# and FA2 is deliberately absent -- it is sdist-only and has no prebuilt wheel for torch 2.13.
+# xformers 0.0.35 is the latest release (requires torch>=2.10, no exact pin).
+# torch is pinned to the base build so vLLM cannot swap it.
 RUN --mount=type=cache,target=/root/.cache/uv \
     UV_TORCH_BACKEND=$TORCH_BACKEND uv pip install --prerelease=allow \
+        "torch==${PYTORCH_VERSION}" \
         "vllm==${VLLM_VERSION}" \
-        "flash-attn-4==${FLASH_ATTN_4_VERSION}" \
+        "flash-attn-4[cu13]==${FLASH_ATTN_4_VERSION}" \
+        "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VERSION}" \
+        "quack-kernels[cu13]==${QUACK_VERSION}" \
         "xformers==0.0.35"
 
 # fix so that git fetch/pull from remote works with shallow clone
@@ -148,7 +166,7 @@ ENV AXOLOTL_DO_NOT_TRACK=1
 
 # Deliberately NOT installed:
 #   llmcompressor - pins transformers<=5.10.1, which would downgrade the pinned
-#                   5.14.1 and take native flash_attention_4 dispatch with it
+#                   5.20.1 and take native flash_attention_4 dispatch with it
 #   hatchery      - the PyPI package of that name is an unrelated CD helper; the
 #                   `hatchery.core.client` the plugin imports is not published
 #   sf_layout     - not published on PyPI at all (gates part of the FP4 CuTe path)
@@ -169,8 +187,8 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ARG DEEPEP_REF="fix/large-model-int-overflow"
 ARG DEEPEP_TORCH_CUDA_ARCH_LIST="9.0;10.0"
 ARG DEEPEP_MAX_JOBS="16"
-# DeepEP V2 GIN needs NCCL >= 2.30.4 (ncclCommQueryProperties). torch 2.11 and
-# vLLM 0.26 pin nvidia-nccl-cu13==2.28.9; later uv installs can restore that pin.
+# DeepEP V2 GIN needs NCCL >= 2.30.4 (ncclCommQueryProperties). torch 2.13.0 pins
+# nvidia-nccl-cu13==2.29.7; later uv installs can restore that pin.
 ARG NCCL_VERSION="2.30.4"
 
 RUN --mount=type=cache,target=/root/.cache/uv \
@@ -190,10 +208,11 @@ SHELL
 
 # sonic-moe is CuTe-DSL (JIT on first GPU use); no CUDA ext at image build.
 # Clone GitHub: PyPI 0.1.2.post1 still pins torch<=2.9.1 and cutlass-dsl==4.4.2.
-# Pin the last commit before quack-kernels>=0.6.4 / gemm_act (that would pull
-# nvidia-cutlass-dsl==4.6.2 and collide with vLLM/FA4's ==4.6.0).
-# --no-deps on sonic-moe; quack 0.6.1 keeps cutlass-dsl==4.6.0.
-ARG SONICMOE_REF="9ffee8b6237a287370c8817ebed86f29e37f68ad"
+# vLLM 0.30.0 now requires quack-kernels==0.6.5 / cutlass-dsl 4.7.1, so move to main
+# HEAD 7396f3e (2026-08-17: requires quack-kernels>=0.6.4, adds non-gated activations
+# via unified QuACK APIs, keeps moe_general_routing_inputs + enums.ActivationType).
+# --no-deps on sonic-moe; quack / cutlass-dsl stay on the vLLM pins.
+ARG SONICMOE_REF="7396f3e604827d8186c2e16e64b28ee33d3defd0"
 
 RUN --mount=type=cache,target=/root/.cache/uv <<'SHELL'
 set -eux
@@ -208,9 +227,9 @@ git fetch --depth 1 origin "${SONICMOE_REF}"
 git checkout FETCH_HEAD
 uv pip install --no-deps .
 uv pip install \
-    "quack-kernels==0.6.1" \
-    "nvidia-cutlass-dsl==4.6.0" \
-    "apache-tvm-ffi>=0.1.10,<0.2"
+    "quack-kernels[cu13]==${QUACK_VERSION}" \
+    "nvidia-cutlass-dsl[cu13]==${CUTLASS_DSL_VERSION}" \
+    "apache-tvm-ffi>=0.1.11,<0.2"
 cd / && rm -rf /tmp/sonic-moe
 SHELL
 
@@ -246,8 +265,11 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # extensions and would fail on a GPU-less builder.
 RUN python -c "\
 import importlib.metadata as md, importlib.util, torch; \
-assert torch.__version__.startswith('2.11.'), 'torch moved: ' + torch.__version__; \
-assert md.version('transformers') == '5.14.1', 'transformers moved: ' + md.version('transformers'); \
+assert torch.__version__.startswith('2.13.0'), 'torch moved: ' + torch.__version__; \
+assert md.version('transformers') == '5.20.1', 'transformers moved: ' + md.version('transformers'); \
+assert md.version('vllm') == '0.30.0', 'vllm moved: ' + md.version('vllm'); \
+from ringmaster.strategies.ulysses import SUPPORTS_FLEX_BLOCK_MASK; \
+assert SUPPORTS_FLEX_BLOCK_MASK, 'ringmaster lacks Ulysses flex BlockMask'; \
 fa = [x.replace('_', '-') for x in md.packages_distributions().get('flash_attn', [])]; \
 assert 'flash-attn-4' in fa, 'FA4 not registered: ' + repr(fa); \
 assert 'flash-attn' not in fa, 'FA2 present, will shadow FA4: ' + repr(fa); \
@@ -255,18 +277,18 @@ from cut_cross_entropy.transformers.patch import AXOLOTL_CCE_FORK, PATCH_FNS; \
 assert AXOLOTL_CCE_FORK, 'CCE is not the axolotl fork'; \
 missing = [k for k in ('gemma4', 'gemma4_text', 'gemma4_unified', 'gemma4_unified_text') if k not in PATCH_FNS]; \
 assert not missing, 'CCE lacks native gemma4 patches: ' + repr(missing); \
-absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe', 'deep_gemm') if importlib.util.find_spec(m) is None]; \
+absent = [m for m in ('densemixer', 'mlflow', 'swanlab', 'orjson', 'math_verify', 'triton', 'bitsandbytes', 'mamba_ssm', 'causal_conv1d', 'sonicmoe', 'deep_gemm', 'fla', 'ringmaster') if importlib.util.find_spec(m) is None]; \
 assert not absent, 'missing modules: ' + repr(absent); \
 assert md.version('bitsandbytes').startswith('0.50.2'), 'unexpected bitsandbytes: ' + md.version('bitsandbytes'); \
 assert md.version('mamba_ssm').startswith('2.3.2'), 'unexpected mamba-ssm: ' + md.version('mamba_ssm'); \
 assert md.version('causal_conv1d').startswith('1.5.3'), 'unexpected causal-conv1d: ' + md.version('causal_conv1d'); \
 assert md.version('deep_ep').startswith('2.1.0'), 'unexpected deep_ep: ' + md.version('deep_ep'); \
 assert md.version('sonic-moe').startswith('0.1.2'), 'unexpected sonic-moe: ' + md.version('sonic-moe'); \
-assert md.version('quack-kernels').startswith('0.6.1'), 'unexpected quack-kernels: ' + md.version('quack-kernels'); \
-assert md.version('nvidia-cutlass-dsl').startswith('4.6.0'), 'cutlass-dsl moved: ' + md.version('nvidia-cutlass-dsl'); \
+assert md.version('quack-kernels') == '0.6.5', 'unexpected quack-kernels: ' + md.version('quack-kernels'); \
+assert md.version('nvidia-cutlass-dsl') == '4.7.1', 'cutlass-dsl moved: ' + md.version('nvidia-cutlass-dsl'); \
 assert tuple(int(x) for x in md.version('nvidia-nccl-cu13').split('.')[:3]) >= (2, 30, 4), 'nccl too old for DeepEP GIN: ' + md.version('nvidia-nccl-cu13'); \
 import deep_ep; \
 assert deep_ep.Buffer is not None; \
-print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| deep_ep', md.version('deep_ep'), '| mamba-ssm', md.version('mamba_ssm'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
+print('ok: torch', torch.__version__, '| transformers', md.version('transformers'), '| vllm', md.version('vllm'), '| deep_ep', md.version('deep_ep'), '| mamba-ssm', md.version('mamba_ssm'), '| flash_attn owned by', fa, '| CCE gemma4 patches present')"
 
 ENTRYPOINT ["/workspace/axolotl/scripts/uv-entrypoint.sh"]
