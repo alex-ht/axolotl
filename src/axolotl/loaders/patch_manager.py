@@ -524,16 +524,22 @@ class PatchManager:
             patch_flex_wrapper(**flex_attn_compile_kwargs)
 
     def _apply_flex_attn_kernel_options_patch(self):
-        """Force flex_attention's Triton kernel_options when the user opts in via
-        flex_attn_kernel_options (e.g. the H100 shared-memory OOM workaround)."""
+        """Force flex_attention's Triton kernel_options. Defaults to
+        ``num_stages: 1`` / ``bwd_num_stages: 1`` (shared-memory OOM workaround);
+        ``flex_attn_kernel_options`` is merged over the defaults and a ``null``
+        value removes a key."""
         if self.cfg.attn_implementation != "flex_attention":
             return
-        if not self.cfg.flex_attn_kernel_options:
+
+        from axolotl.monkeypatch.attention.flex_attn import (
+            patch_flex_kernel_options,
+            resolve_flex_kernel_options,
+        )
+
+        kernel_options = resolve_flex_kernel_options(self.cfg.flex_attn_kernel_options)
+        if not kernel_options:
             return
-
-        from axolotl.monkeypatch.attention.flex_attn import patch_flex_kernel_options
-
-        patch_flex_kernel_options(self.cfg.flex_attn_kernel_options)
+        patch_flex_kernel_options(kernel_options)
 
     def _apply_sageattn_patches(self):
         """Apply patches for SageAttention."""

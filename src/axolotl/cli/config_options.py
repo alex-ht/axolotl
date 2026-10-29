@@ -2702,7 +2702,7 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         ("--flex-attn-kernel-options",),
         None,
         None,
-        "Override Triton's autotuned kernel_options (BLOCK_M, BLOCK_N, num_stages, num_warps, ...) for every flex_attention call. Workaround for H100 Triton shared-memory OOM on some shapes: the autotuned config can exceed the 232KB per-SM limit, and smaller blocks (e.g. BLOCK_M: 16, BLOCK_N: 16, num_stages: 1, num_warps: 4) trade some throughput to fit. Requires attn_implementation: flex_attention.",
+        "Triton kernel_options (BLOCK_M, BLOCK_N, num_stages, num_warps, bwd_*/fwd_* prefixed keys, ...) forced onto every flex_attention call. With attn_implementation: flex_attention the defaults {num_stages: 1, bwd_num_stages: 1} are always applied (shared-memory OOM workaround: autotuned multi-stage configs can exceed the per-SM limit, e.g. 232KB on H100). Keys given here are merged over the defaults; set a key to null to drop it (e.g. num_stages: null and bwd_num_stages: null restore Triton autotuning). Smaller blocks (e.g. BLOCK_M: 16, BLOCK_N: 16, num_warps: 4) trade more throughput to fit. Requires attn_implementation: flex_attention.",
     ),
     (
         ("--flash-attention/--no-flash-attention",),

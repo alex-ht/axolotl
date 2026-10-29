@@ -148,7 +148,8 @@ description: Frequently asked questions
 **Q: `flex_attention` OOMs on H100 with a Triton shared-memory error, even though there's plenty of VRAM free**
 
 > A: Triton's autotuner picked a block-size config that exceeds H100's 232KB per-SM shared memory,
-> independent of free VRAM. Force smaller blocks with `flex_attn_kernel_options` — see
+> independent of free VRAM. Axolotl already defaults flex to `num_stages: 1` / `bwd_num_stages: 1`;
+> if that is not enough, force smaller blocks with `flex_attn_kernel_options` — see
 > [Attention: Overriding Triton kernel options](attention.qmd#overriding-triton-kernel-options) for
 > the exact values and tradeoffs.
 

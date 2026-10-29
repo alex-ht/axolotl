@@ -88,6 +88,28 @@ def patch_flex_wrapper(**flex_attn_compile_kwargs):
     ].WrappedFlexAttention = WrappedFlexAttention
 
 
+# Default flex_attention kernel_options applied whenever attn_implementation is
+# flex_attention. A single software-pipelining stage keeps the forward and backward
+# Triton templates inside the per-SM shared-memory budget (232KB on H100, less on
+# consumer GPUs), where some autotuned multi-stage configs OOM.
+# Users merge their own flex_attn_kernel_options over these; a key set to None
+# removes it (falls back to Triton's autotuned value).
+DEFAULT_FLEX_KERNEL_OPTIONS: dict[str, Any] = {"num_stages": 1, "bwd_num_stages": 1}
+
+
+def resolve_flex_kernel_options(
+    user_options: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Merge ``user_options`` over :data:`DEFAULT_FLEX_KERNEL_OPTIONS`.
+
+    User keys win. A user key whose value is ``None`` drops that key entirely, so
+    ``{"num_stages": None, "bwd_num_stages": None}`` opts out of the defaults and
+    lets Triton autotune the stage count again.
+    """
+    merged = {**DEFAULT_FLEX_KERNEL_OPTIONS, **(user_options or {})}
+    return {k: v for k, v in merged.items() if v is not None}
+
+
 def patch_flex_kernel_options(kernel_options: dict[str, Any]) -> bool:
     """Force ``kernel_options`` (e.g. ``BLOCK_M``/``BLOCK_N``/``num_stages``/``num_warps``) onto every
     ``flex_attention`` call, overriding Triton's autotuned block sizes. Needed on H100, where the

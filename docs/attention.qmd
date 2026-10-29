@@ -201,30 +201,46 @@ Requires torch ≥ 2.6. See [PyTorch docs](https://pytorch.org/blog/flexattentio
 
 #### Overriding Triton kernel options
 
+With `attn_implementation: flex_attention`, Axolotl always forces these
+`kernel_options` onto every `flex_attention` call, even if you set nothing:
+
+```yaml
+num_stages: 1      # forward (and backward, unless bwd_num_stages is set)
+bwd_num_stages: 1  # backward kernels
+```
+
+`flex_attn_kernel_options` is merged over those defaults (your keys win), and it
+accepts any of Triton's `BLOCK_M`/`BLOCK_N`/`num_stages`/`num_warps`/etc. plus the
+`fwd_`/`bwd_` prefixed forms PyTorch understands. For example, the following
+gives `{num_stages: 1, bwd_num_stages: 1, BLOCK_M: 16, BLOCK_N: 16, num_warps: 4}`:
+
 ```yaml
 attn_implementation: flex_attention
 flex_attn_kernel_options:
   BLOCK_M: 16
   BLOCK_N: 16
-  num_stages: 1
   num_warps: 4
 ```
 
-`flex_attn_kernel_options` forces the given `kernel_options` (any of Triton's
-`BLOCK_M`/`BLOCK_N`/`num_stages`/`num_warps`/etc.) onto every `flex_attention`
-call, overriding whatever PyTorch's autotuner would have picked. It requires
-`attn_implementation: flex_attention`.
+Set a key to `null` to drop it. To opt out of the defaults entirely and let
+PyTorch's autotuner choose the stage count again:
 
-This exists for one known failure mode: on H100, the autotuned config for some
-shapes exceeds the 232KB per-SM shared-memory limit, and `flex_attention` OOMs
-regardless of how much VRAM is free. The values above are one working
-combination — with them, the Q/K/V tiles plus accumulator fit in roughly 80KB —
-but they trade some throughput to get there, so only set this if you actually
-hit the error; it is not a default and nothing enables it automatically. Tune
-upward if your shapes leave headroom.
+```yaml
+flex_attn_kernel_options:
+  num_stages: null
+  bwd_num_stages: null
+```
+
+The defaults exist for one known failure mode: the autotuned config for some
+shapes exceeds the per-SM shared-memory limit (232KB on H100, less on consumer
+GPUs), and `flex_attention` OOMs regardless of how much VRAM is free. One
+pipeline stage removes most of that pressure at some throughput cost. If you
+still hit the error, also shrink the blocks as above. With those values the
+Q/K/V tiles plus accumulator fit in roughly 80KB. Tune upward if your shapes
+leave headroom.
 
 An explicit `kernel_options` passed at the call site (if some other integration
-sets one) always wins over this default — the patch only fills it in when unset.
+sets one) always wins over these values. The patch only fills it in when unset.
 
 ### SageAttention
 
