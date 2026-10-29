@@ -431,6 +431,7 @@ class PatchManager:
             normalize=(
                 self.cfg.eaft_normalize if self.cfg.eaft_normalize is not None else True
             ),
+            stable_ce=bool(self.cfg.eaft_stable_ce),
         )
 
     def _apply_fsdp_patches(self):

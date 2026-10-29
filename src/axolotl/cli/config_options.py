@@ -2423,6 +2423,12 @@ AXOLOTL_CONFIG_CLI_OPTIONS = (
         "Divide top-k entropy by ln(k) so weights are in [0, 1] (paper default: true)",
     ),
     (
+        ("--eaft-stable-ce/--no-eaft-stable-ce",),
+        None,
+        None,
+        "Use the Softmax Collapse fix (arXiv:2610.31642) in EAFT: fp32 target logit, softplus(-m) loss, closed-form target gradient -sigmoid(-m), log_softmax entropy weights. Default false keeps the previous numerics.",
+    ),
+    (
         ("--tiled-mlp/--no-tiled-mlp",),
         None,
         None,
