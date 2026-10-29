@@ -44,6 +44,7 @@ def _eaft_from_lm_head(
     k: int,
     num_items_in_batch=None,
     normalize: bool = True,
+    stable_ce: bool = False,
 ):
     lm_head = _unwrap_lm_head(lm_head)
     try:
@@ -60,6 +61,7 @@ def _eaft_from_lm_head(
                     k,
                     num_items_in_batch,
                     normalize,
+                    stable_ce,
                 )
     except ImportError:
         pass
@@ -82,10 +84,13 @@ def _eaft_from_lm_head(
         bias=bias,
         shift=shift,
         normalize=normalize,
+        stable_ce=stable_ce,
     )
 
 
-def make_eaft_forward(alpha: float, k: int, normalize: bool = True):
+def make_eaft_forward(
+    alpha: float, k: int, normalize: bool = True, stable_ce: bool = False
+):
     def eaft_forward(
         self,
         *args,
@@ -151,6 +156,7 @@ def make_eaft_forward(alpha: float, k: int, normalize: bool = True):
                 k,
                 num_items_in_batch,
                 normalize,
+                stable_ce,
             )
         else:
             logits = self.lm_head(kept_hidden_states)
@@ -178,7 +184,11 @@ def make_eaft_forward(alpha: float, k: int, normalize: bool = True):
 
 
 def patch_eaft_forward(
-    model_type: str, alpha: float = 1.0, k: int = 20, normalize: bool = True
+    model_type: str,
+    alpha: float = 1.0,
+    k: int = 20,
+    normalize: bool = True,
+    stable_ce: bool = False,
 ) -> None:
     """Replace ``ForCausalLM.forward`` with a skip-logits EAFT implementation."""
     _, cls_name = get_causal_lm_model_cls_prefix(model_type)
@@ -194,11 +204,15 @@ def patch_eaft_forward(
             f"(class {cls_name}): {exc}"
         ) from exc
 
-    model_cls.forward = make_eaft_forward(alpha=alpha, k=k, normalize=normalize)
+    model_cls.forward = make_eaft_forward(
+        alpha=alpha, k=k, normalize=normalize, stable_ce=stable_ce
+    )
     LOG.info(
-        "Applied fused linear EAFT forward patch to %s (alpha=%s, k=%s, normalize=%s)",
+        "Applied fused linear EAFT forward patch to %s "
+        "(alpha=%s, k=%s, normalize=%s, stable_ce=%s)",
         cls_name,
         alpha,
         k,
         normalize,
+        stable_ce,
     )

@@ -1114,6 +1114,12 @@ class AxolotlInputConfig(
             "description": "Divide top-k entropy by ln(k) so weights are in [0, 1] (paper default: true)"
         },
     )
+    eaft_stable_ce: bool | None = Field(
+        default=False,
+        json_schema_extra={
+            "description": "Use the Softmax Collapse fix (arXiv:2610.31642) in EAFT: fp32 target logit, softplus(-m) loss, closed-form target gradient -sigmoid(-m), log_softmax entropy weights. Default false keeps the previous numerics."
+        },
+    )
     use_dft: bool | None = Field(
         default=None,
         json_schema_extra={

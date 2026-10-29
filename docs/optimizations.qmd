@@ -76,7 +76,10 @@ use_eaft: true
 eaft_alpha: 1.0
 eaft_k: 20
 eaft_normalize: true
+eaft_stable_ce: false
 ```
+
+`eaft_stable_ce: true` (opt-in) applies the Softmax Collapse fix from [arXiv:2610.31642](https://arxiv.org/abs/2610.31642): the kernel takes the target logit `z_t` from the same fp32 accumulator and also tracks `lse_not` (log-sum-exp over non-target classes). With `m = z_t - lse_not`, the loss is `softplus(-m)` and the target gradient is the closed form `-sigmoid(-m)` instead of `p_t - 1`, so confident tokens keep a correctly signed target gradient and each row's gradient sums to zero. Entropy weights use `log_softmax` (no epsilon), and the non-CUDA fallback upcasts logits to fp32. With `false` the numerics are bit-identical to before.
 
 ### Liger Kernels
 

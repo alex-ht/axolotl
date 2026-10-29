@@ -429,6 +429,7 @@ class HFCausalTrainerBuilder(TrainerBuilderBase):
                         if self.cfg.eaft_normalize is not None
                         else True
                     ),
+                    stable_ce=bool(self.cfg.eaft_stable_ce),
                 )
                 trainer_kwargs["compute_loss_func"] = configured_eaft_loss
 

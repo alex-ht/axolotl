@@ -136,6 +136,13 @@ class TestValidation(BaseValidation):
         assert cfg.eaft_k == 20
         assert cfg.eaft_alpha == 1.0
         assert cfg.eaft_normalize is True
+        assert cfg.eaft_stable_ce is False
+
+    def test_eaft_stable_ce_enabled(self, minimal_cfg):
+        cfg = validate_config(
+            DictDefault({"use_eaft": True, "eaft_stable_ce": True}) | minimal_cfg
+        )
+        assert cfg.eaft_stable_ce is True
 
     def test_zero3_qlora_use_reentrant_false(self, minimal_cfg):
         test_cfg = DictDefault(

@@ -53,6 +53,8 @@ class TestOpsRegistered:
 
         assert torch.ops.axolotl.fused_linear_eaft_fwd is not None
         assert torch.ops.axolotl.fused_linear_eaft_bwd is not None
+        assert torch.ops.axolotl.fused_linear_eaft_fwd_stable is not None
+        assert torch.ops.axolotl.fused_linear_eaft_bwd_stable is not None
 
 
 class TestDispatchVisibility:
