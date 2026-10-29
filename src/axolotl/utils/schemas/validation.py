@@ -2471,6 +2471,26 @@ class ComplexValidationMixin:
                     "implementation (sdpa/flash/flex); `attn_implementation: eager` "
                     "is not supported."
                 )
+            # ocis_patch: ringmaster CP + flex_attention is not correct yet. Ulysses
+            # runs flex without the causal block mask (bidirectional) on unpacked
+            # batches, packed / sliding-window layers silently fall back to SDPA with
+            # a dense mask, and ring/usp torch_native flex is forward-only. Reject
+            # until the Ulysses flex port (phase 2) lands.
+            if self.attn_implementation == "flex_attention":
+                raise ValueError(
+                    "attn_implementation: flex_attention is not supported with "
+                    "context_parallel_size > 1 (ringmaster CP would run flex without "
+                    "a causal/sliding mask or fall back to dense SDPA). Use sdpa or a "
+                    "flash backend for context parallelism."
+                )
+            # gemma4_hybrid swaps global layers to sdpa after load, bypassing the
+            # ringmaster CP attention wrapper on those layers.
+            if getattr(self, "gemma4_hybrid_attn_impl", None):
+                raise ValueError(
+                    "gemma4_hybrid_attn_impl is not supported with "
+                    "context_parallel_size > 1: its post-load sdpa swap on global "
+                    "layers bypasses ringmaster context parallelism."
+                )
             cp_block_size = getattr(
                 getattr(self, "context_parallel", None), "size", None
             )

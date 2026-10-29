@@ -388,3 +388,50 @@ def test_fla_cp_requires_companion_adapter_before_setup(monkeypatch):
     with pytest.raises(ImportError, match="FLA Mamba adapters"):
         ContextParallelPlugin().post_trainer_create(cfg, trainer)
     setup.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "attn",
+    [
+        {"attn_implementation": "flex_attention"},
+        {"flex_attention": True},
+    ],
+)
+def test_cp_rejects_flex_attention(min_base_cfg, attn):
+    with pytest.raises(ValueError, match="flex_attention is not supported"):
+        validate_config(min_base_cfg | DictDefault(context_parallel_size=2, **attn))
+
+
+def test_cp_rejects_flex_attention_nested_block(min_base_cfg):
+    with pytest.raises(ValueError, match="flex_attention is not supported"):
+        validate_config(
+            min_base_cfg
+            | DictDefault(
+                context_parallel={"size": 2, "backend": "ulysses"},
+                attn_implementation="flex_attention",
+            )
+        )
+
+
+def test_cp_rejects_gemma4_hybrid_attn_impl(min_base_cfg):
+    with pytest.raises(ValueError, match="gemma4_hybrid_attn_impl is not supported"):
+        validate_config(
+            min_base_cfg
+            | DictDefault(
+                context_parallel_size=2,
+                gemma4_hybrid_attn_impl=True,
+                attn_implementation="flash_attention_2",
+            )
+        )
+
+
+def test_flex_and_gemma4_hybrid_allowed_without_cp(min_base_cfg):
+    cfg = validate_config(
+        min_base_cfg | DictDefault(attn_implementation="flex_attention")
+    )
+    assert cfg.attn_implementation == "flex_attention"
+    cfg = validate_config(
+        min_base_cfg
+        | DictDefault(context_parallel_size=1, gemma4_hybrid_attn_impl=True)
+    )
+    assert cfg.gemma4_hybrid_attn_impl is True
