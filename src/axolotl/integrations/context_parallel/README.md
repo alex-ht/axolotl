@@ -30,12 +30,33 @@ scarce (MQA); USP otherwise (Ulysses intra-node × Ring inter-node).
 
 ## Training support
 
-Ulysses can wrap SDPA or Flash Attention. Ring/USP training requires a Flash
+Ulysses can wrap SDPA, Flash Attention, or FlexAttention. Ring/USP training requires a Flash
 Attention kernel (`ring_impl: hf_kernels` or automatic selection); Ringmaster's
 `torch_native` block kernel is forward-only. Sample packing and batch flattening are supported with CP; automatic load balancing selects contiguous shards for packed inputs. GLM DSA kernels remain incompatible with packed CP.
 SFT uses the model's causal LM loss and requires loss-kwargs support; custom loss
 functions and label smoothing are rejected. GRPO/EBFT retain their output-gathering
 path.
+
+### FlexAttention with Ulysses
+
+```yaml
+attn_implementation: flex_attention
+context_parallel:
+  size: 2
+  backend: ulysses               # required: auto may resolve to ring/usp
+```
+
+After the Ulysses all-to-all each rank holds the full sequence for a head subset, and
+ringmaster builds one flex `BlockMask` per step over the global positions: causal,
+same-document for packed batches, plus each layer's sliding window (Gemma-4 sliding
+and global layers get one mask each, shared across layers). This needs an
+axolotl-ringmaster that exposes `ringmaster.strategies.ulysses.SUPPORTS_FLEX_BLOCK_MASK`
+(the `ringmaster` extra pins one); with an older ringmaster, or with `backend: ring`,
+`backend: usp`, or an unresolved `auto` layout, config validation rejects
+`flex_attention` + CP. `gemma4_hybrid_attn_impl` stays incompatible with CP because its
+post-load SDPA swap on global layers bypasses the CP wrapper; for Gemma-4 use
+`attn_implementation: flex_attention` for all layers instead. `flex_attn_kernel_options`
+(default `num_stages: 1`, `bwd_num_stages: 1`) applies to the Ulysses flex calls too.
 
 The adapter preserves Trainer's supervised-token count across the entire gradient
 accumulation window, including unequal microbatches and partial final windows.

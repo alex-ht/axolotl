@@ -350,12 +350,12 @@ class TestContextParallelAttnImplValidator:
         assert validated.attn_implementation == impl
 
     def test_flex_attention_rejected(self, min_base_cfg):
-        # ocis_patch: ringmaster CP + flex is rejected until the Ulysses flex port.
+        # ringmaster CP + flex needs an explicit Ulysses backend (auto may pick ring).
         cfg = min_base_cfg | DictDefault(
             context_parallel_size=2,
             attn_implementation="flex_attention",
         )
-        with pytest.raises(ValueError, match="flex_attention is not supported"):
+        with pytest.raises(ValueError, match="requires the Ulysses backend"):
             validate_config(cfg)
 
     def test_eager_rejected(self, min_base_cfg):

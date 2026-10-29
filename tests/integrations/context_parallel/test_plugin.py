@@ -397,13 +397,54 @@ def test_fla_cp_requires_companion_adapter_before_setup(monkeypatch):
         {"flex_attention": True},
     ],
 )
-def test_cp_rejects_flex_attention(min_base_cfg, attn):
-    with pytest.raises(ValueError, match="flex_attention is not supported"):
+def test_cp_flex_requires_explicit_ulysses(min_base_cfg, attn):
+    # backend auto may resolve to ring/usp at runtime -> rejected
+    with pytest.raises(ValueError, match="requires the Ulysses backend"):
         validate_config(min_base_cfg | DictDefault(context_parallel_size=2, **attn))
 
 
-def test_cp_rejects_flex_attention_nested_block(min_base_cfg):
-    with pytest.raises(ValueError, match="flex_attention is not supported"):
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"size": 2, "backend": "ring"},
+        {"size": 4, "backend": "usp", "ulysses_size": 2, "ring_size": 2},
+    ],
+)
+def test_cp_flex_rejects_ring_and_usp(min_base_cfg, block):
+    with pytest.raises(ValueError, match="requires the Ulysses backend"):
+        validate_config(
+            min_base_cfg
+            | DictDefault(context_parallel=block, attn_implementation="flex_attention")
+        )
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"size": 2, "backend": "ulysses"},
+        {"size": 2, "backend": "auto", "ring_size": 1},
+        {"size": 2, "backend": "auto", "ulysses_size": 2},
+    ],
+)
+def test_cp_flex_allowed_with_ulysses(min_base_cfg, block, monkeypatch):
+    monkeypatch.setattr(
+        "axolotl.integrations.context_parallel.compat.ringmaster_supports_ulysses_flex",
+        lambda: True,
+    )
+    cfg = validate_config(
+        min_base_cfg
+        | DictDefault(context_parallel=block, attn_implementation="flex_attention")
+    )
+    assert cfg.attn_implementation == "flex_attention"
+    assert cfg.context_parallel_size == 2
+
+
+def test_cp_flex_rejected_without_ringmaster_support(min_base_cfg, monkeypatch):
+    monkeypatch.setattr(
+        "axolotl.integrations.context_parallel.compat.ringmaster_supports_ulysses_flex",
+        lambda: False,
+    )
+    with pytest.raises(ValueError, match="Ulysses flex BlockMask"):
         validate_config(
             min_base_cfg
             | DictDefault(
@@ -411,6 +452,21 @@ def test_cp_rejects_flex_attention_nested_block(min_base_cfg):
                 attn_implementation="flex_attention",
             )
         )
+
+
+def test_ringmaster_supports_ulysses_flex_detects_flag(monkeypatch):
+    import sys
+    import types
+
+    from axolotl.integrations.context_parallel.compat import (
+        ringmaster_supports_ulysses_flex,
+    )
+
+    fake = types.ModuleType("ringmaster.strategies.ulysses")
+    monkeypatch.setitem(sys.modules, "ringmaster.strategies.ulysses", fake)
+    assert ringmaster_supports_ulysses_flex() is False
+    fake.SUPPORTS_FLEX_BLOCK_MASK = True
+    assert ringmaster_supports_ulysses_flex() is True
 
 
 def test_cp_rejects_gemma4_hybrid_attn_impl(min_base_cfg):

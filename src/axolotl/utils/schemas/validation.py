@@ -2471,18 +2471,44 @@ class ComplexValidationMixin:
                     "implementation (sdpa/flash/flex); `attn_implementation: eager` "
                     "is not supported."
                 )
-            # ocis_patch: ringmaster CP + flex_attention is not correct yet. Ulysses
-            # runs flex without the causal block mask (bidirectional) on unpacked
-            # batches, packed / sliding-window layers silently fall back to SDPA with
-            # a dense mask, and ring/usp torch_native flex is forward-only. Reject
-            # until the Ulysses flex port (phase 2) lands.
+            # ringmaster CP + flex_attention is exact only on the Ulysses leg, and only
+            # with a ringmaster that builds the global BlockMask (causal / same-doc /
+            # sliding window). The ring/usp torch_native flex kernel is forward-only,
+            # and `backend: auto` may resolve to ring/usp at runtime, so require an
+            # explicit pure-Ulysses layout.
             if self.attn_implementation == "flex_attention":
-                raise ValueError(
-                    "attn_implementation: flex_attention is not supported with "
-                    "context_parallel_size > 1 (ringmaster CP would run flex without "
-                    "a causal/sliding mask or fall back to dense SDPA). Use sdpa or a "
-                    "flash backend for context parallelism."
+                cp_cfg = getattr(self, "context_parallel", None)
+                backend = getattr(cp_cfg, "backend", "auto")
+                ring_size = getattr(cp_cfg, "ring_size", None)
+                ulysses_size = getattr(cp_cfg, "ulysses_size", None)
+                pure_ulysses = (
+                    backend == "ulysses"
+                    or (backend in ("auto", "usp") and ring_size == 1)
+                    or (
+                        backend in ("auto", "usp")
+                        and ulysses_size == self.context_parallel_size
+                    )
                 )
+                if not pure_ulysses:
+                    raise ValueError(
+                        "attn_implementation: flex_attention with "
+                        "context_parallel_size > 1 requires the Ulysses backend: set "
+                        "`context_parallel.backend: ulysses`. Ring/USP flex "
+                        "(torch_native) is forward-only."
+                    )
+                from axolotl.integrations.context_parallel.compat import (
+                    ringmaster_supports_ulysses_flex,
+                )
+
+                if not ringmaster_supports_ulysses_flex():
+                    raise ValueError(
+                        "attn_implementation: flex_attention with context parallelism "
+                        "needs an axolotl-ringmaster with Ulysses flex BlockMask "
+                        "support (ringmaster.strategies.ulysses.SUPPORTS_FLEX_BLOCK_MASK); "
+                        "the installed version would run flex without a causal/sliding "
+                        "mask. Install `axolotl[ringmaster]` from this branch or use "
+                        "sdpa / a flash backend."
+                    )
             # gemma4_hybrid swaps global layers to sdpa after load, bypassing the
             # ringmaster CP attention wrapper on those layers.
             if getattr(self, "gemma4_hybrid_attn_impl", None):

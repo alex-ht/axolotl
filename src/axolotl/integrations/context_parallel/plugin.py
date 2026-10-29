@@ -204,6 +204,20 @@ class ContextParallelPlugin(BasePlugin):
                 for model in models
             ),
         )
+        if inner_attn == "flex_attention":
+            from .compat import ringmaster_supports_ulysses_flex
+
+            if rm_cfg.ring_size > 1:
+                raise ValueError(
+                    "flex_attention context parallelism supports the Ulysses backend "
+                    f"only; resolved ring_size={rm_cfg.ring_size}. Set "
+                    "`context_parallel.backend: ulysses`."
+                )
+            if not ringmaster_supports_ulysses_flex():
+                raise ValueError(
+                    "Installed axolotl-ringmaster lacks Ulysses flex BlockMask support; "
+                    "flex_attention would run without a causal/sliding mask under CP."
+                )
         if rm_cfg.ring_size > 1 and not glm_dsa:
             from ringmaster.strategies.ring import resolve_ring_impl
 
