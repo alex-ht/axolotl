@@ -17,7 +17,9 @@ class _NoBiasWrapper:
         self.weight = weight
 
     def __getattr__(self, name: str):
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no attribute '{name}'"
+        )
 
 
 def test_patch_eaft_forward_resolves_gemma3_text_module():

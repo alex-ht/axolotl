@@ -100,13 +100,13 @@ class TestValidation(BaseValidation):
         validate_config(test_cfg)
 
     def test_eaft_conflicts_with_cce(self, minimal_cfg):
-        with pytest.raises(ValueError, match="cross entropy"):
+        with pytest.raises(ValueError, match="cross_entropy|cross entropy"):
             validate_config(
                 DictDefault({"use_eaft": True, "cut_cross_entropy": True}) | minimal_cfg
             )
 
     def test_eaft_conflicts_with_liger_flce(self, minimal_cfg):
-        with pytest.raises(ValueError, match="cross entropy"):
+        with pytest.raises(ValueError, match="cross_entropy|cross entropy"):
             validate_config(
                 DictDefault(
                     {

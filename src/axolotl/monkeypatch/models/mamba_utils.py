@@ -143,7 +143,6 @@ def _mamba_fast_path_available(target_module) -> bool:
     )
 
 
-
 def patch_hub_kernels_prefer_local() -> None:
     """Prefer pip-installed kernels over Hub snapshot_download.
 
@@ -182,7 +181,6 @@ def patch_hub_kernels_prefer_local() -> None:
     hub_kernels.lazy_load_kernel = wrapped
 
 
-
 def _rebind_module_lazy_load_kernel(target_module) -> None:
     try:
         from transformers.integrations import hub_kernels
@@ -190,7 +188,6 @@ def _rebind_module_lazy_load_kernel(target_module) -> None:
         return
     if getattr(target_module, "lazy_load_kernel", None) is not None:
         target_module.lazy_load_kernel = hub_kernels.lazy_load_kernel
-
 
 
 def _try_bind_local_mamba_kernels(target_module) -> None:

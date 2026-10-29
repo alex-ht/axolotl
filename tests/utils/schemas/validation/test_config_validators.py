@@ -337,7 +337,6 @@ class TestContextParallelAttnImplValidator:
             "kernels-community/flash-attn2",
             "kernels-community/flash-attn3",
             "sdpa",
-            "flex_attention",
         ],
     )
     def test_kernel_backends_allowed(self, min_base_cfg, impl, monkeypatch):
@@ -349,6 +348,15 @@ class TestContextParallelAttnImplValidator:
         validated = validate_config(cfg)
         assert validated.context_parallel_size == 2
         assert validated.attn_implementation == impl
+
+    def test_flex_attention_rejected(self, min_base_cfg):
+        # ocis_patch: ringmaster CP + flex is rejected until the Ulysses flex port.
+        cfg = min_base_cfg | DictDefault(
+            context_parallel_size=2,
+            attn_implementation="flex_attention",
+        )
+        with pytest.raises(ValueError, match="flex_attention is not supported"):
+            validate_config(cfg)
 
     def test_eager_rejected(self, min_base_cfg):
         cfg = min_base_cfg | DictDefault(
