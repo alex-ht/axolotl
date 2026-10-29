@@ -159,10 +159,14 @@ def _load_model(
     if lora_path:
         from peft import PeftModel
 
+        if base_path is None:  # narrowed by _validate_convert_args
+            raise ValueError("--base-path is required when --lora-path is set.")
         load_path = base_path
         if _hf_quant_method(base_path) == "mxfp4":
             kwargs["quantization_config"] = Mxfp4Config(dequantize=True)
     else:
+        if model_path is None:  # narrowed by _validate_convert_args
+            raise ValueError("Specify --model-path, or --lora-path with --base-path.")
         load_path = model_path
 
     LOG.info(f"Loading model from {load_path}.")

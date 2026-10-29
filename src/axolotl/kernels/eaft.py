@@ -404,7 +404,7 @@ def fused_linear_eaft_loss(
 ) -> torch.Tensor:
     """EAFT loss from hidden states and ``lm_head`` weights (CUDA)."""
     n_items = num_items_in_batch
-    if torch.is_tensor(n_items):
+    if isinstance(n_items, torch.Tensor):
         n_items = n_items.item()
     return FusedLinearEAFTFunction.apply(
         hidden,
